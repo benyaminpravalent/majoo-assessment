@@ -9,7 +9,7 @@ where it is satisfied and how it was checked.
 |---|---|
 | ✅ | Implemented **and executed** on this machine |
 | 📝 | Delivered as a written artefact (sections 2 and 3 are design deliverables) |
-| ⚠️ | Implemented but **not executed here** — see [Unverified](#unverified-items) |
+| ⚠️ | Implemented but not executed at the time of writing — all such items have since been run; see [Previously unverified items](#previously-unverified-items--now-executed) |
 
 ---
 
@@ -145,13 +145,13 @@ covered:
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Unit tests for business logic | 344 test functions, 618 cases | ✅ |
+| Unit tests for business logic | 344 test functions, 481 cases | ✅ |
 | HTTP handler tests | 51 across three features, through the real router | ✅ |
-| Repository/database tests | `pgxmock` for SQL and transactions; a build-tagged suite for a real DB | ✅ / ⚠️ |
+| Repository/database tests | `pgxmock` for SQL and transactions; a build-tagged suite run against PostgreSQL 16.15 — 12 functions, 25 cases | ✅ |
 | Authentication and authorization tests | 23 token + middleware tests, plus ownership tests per feature | ✅ |
 | Validation and error-path tests | Throughout | ✅ |
 | Transaction rollback tests | All four boundaries, both directions | ✅ |
-| Race-detector compatibility | Concurrency tests written for it | ⚠️ no C toolchain here |
+| Race-detector compatibility | `make test-race` clean across all 15 packages | ✅ |
 | Invalid credentials | `TestLoginRejectsWrongPassword` | ✅ |
 | Missing/malformed authentication | 5 cases in `TestRequireRejectsMissingOrMalformedHeader` | ✅ |
 | Unauthorized ownership access | Post and comment, read and write | ✅ |
@@ -337,21 +337,22 @@ Feed and cache strategy:
 
 ---
 
-## Unverified items
+## Previously unverified items — now executed
 
-Repeated here so they are impossible to miss. Each is written and reviewed but
-**not executed**, because this machine has no Docker, no PostgreSQL and no C
-toolchain.
+These were written and reviewed but not executed at first, because the machine
+this was developed on had no Docker, no PostgreSQL and no C toolchain. They have
+since all been run on a machine that has them. Running them found three real
+defects; see [ai-usage.md §5](ai-usage.md#5-defects-found-by-running-the-previously-unverified-checks).
 
-| Item | Command to verify |
-|---|---|
-| Docker image build | `make docker-build` |
-| Compose stack and health checks | `make up` |
-| The Go migration runner against a live server (the SQL itself is verified) | `make migrate-up && make migrate-status` |
-| Integration test suite | `make up && make test-integration` |
-| End-to-end smoke test | `make up && ./scripts/smoke.sh` |
-| Race detector | `make test-race` |
-| golangci-lint | `make lint` after installing it |
+| Item | Command | Result |
+|---|---|---|
+| Docker image build | `make docker-build` | ✅ builds |
+| Compose stack and health checks | `make up` | ✅ after fixing a missing executable bit |
+| The Go migration runner against a live server | `make migrate-up`, `migrate-down`, `migrate-status` | ✅ up, down and re-up |
+| Integration test suite | `make test-integration` | ✅ 12 functions, 25 cases, 0 skipped |
+| End-to-end smoke test | `make smoke` | ✅ 46/46 after fixing a refresh-rotation bug |
+| Race detector | `make test-race` | ✅ clean |
+| golangci-lint | `make lint` | ✅ 4 findings, all deliberately declined — see the README |
 
 Everything else in this document was executed, and the commands are in the
 README so any claim can be re-checked.

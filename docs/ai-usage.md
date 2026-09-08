@@ -53,7 +53,7 @@ ways that read well.
 | It compiles | `go build ./...` after every meaningful change |
 | No vet findings | `go vet ./...` **and** `go vet -tags=integration ./...` |
 | Formatted | `gofmt -l .` — must produce no output |
-| Tests pass | `go test -count=1 ./...` — 344 functions, 618 cases |
+| Tests pass | `go test -count=1 ./...` — 344 functions, 481 cases |
 | Coverage is 71.5% | `go tool cover -func`, read off the tool. Not estimated, not rounded up |
 | The OpenAPI spec matches the code | A contract test walks Chi's routes and compares both directions — 23 operations |
 | The Mermaid diagrams render | Parsed by Mermaid 11.17.2 itself via jsdom, not by eye |
@@ -61,15 +61,20 @@ ways that read well.
 | The section-3 constraints work | 11 deliberately invalid writes attempted; all 11 rejected |
 | The section-3 counters are correct | 7 trigger-maintained counters reconciled against their source rows — zero drift |
 
-### Explicitly *not* claimed
+### Previously not claimed — and what happened when they were run
 
-Docker build, Compose startup, migrations against a live server, the integration
-suite, the smoke script and the race detector were **not run** — this machine has
-no Docker, no PostgreSQL and no C toolchain. They are written, they compile, and
-the README says plainly that they are unverified.
+For most of this project's life the Docker build, Compose startup, migrations
+against a live server, the integration suite, the smoke script and the race
+detector were **not run**: the machine it was developed on had no Docker, no
+PostgreSQL and no C toolchain. They were written, they compiled, and the README
+said plainly that they were unverified.
 
-It would have been easy to write "Docker build: ✅". That is exactly the kind of
-unverified claim this section exists to rule out.
+It would have been easy to write "Docker build: ✅" instead. That is exactly the
+kind of unverified claim this section exists to rule out — and the vindication
+is [section 5](#5-defects-found-by-running-the-previously-unverified-checks):
+when those checks were finally executed on a machine that could run them, three
+of them failed, and one was a **500 on every token refresh**. Marking them green
+would have shipped a broken authentication flow with a tick beside it.
 
 ---
 
@@ -160,14 +165,98 @@ than the comment it replaced. Removed in favour of a plain comment.
 
 ---
 
-## 5. What remains a risk
+## 5. Defects found by running the previously unverified checks
+
+The checks in §3 that could not run on the original development machine were
+later executed on one with Docker, PostgreSQL and a C toolchain. **Three of the
+seven failed.** Each failure is the kind that only execution finds.
+
+### 5.1 `docker compose up` failed outright — a missing executable bit
+
+`make up` aborted with `container for service "postgres" is unhealthy`. The
+cause was two files committed as mode `100644` instead of `100755`:
+`scripts/init-test-db.sh` and `scripts/smoke.sh`. The project was developed on
+Windows, where Git does not record the executable bit.
+
+The failure chain is worth tracing, because the symptom is three steps from the
+cause. Postgres's entrypoint tried to execute the init script, got
+`bad interpreter: Permission denied`, and the container died. `restart:
+unless-stopped` brought it back, and on the second start the entrypoint found a
+populated data directory and **skipped initialisation entirely** — so
+`blog_test` was never created, silently. The `api` and `migrate` containers
+never started at all.
+
+Three documented reviewer commands were broken by this: `make up`, `make smoke`
+(the script was not executable either) and `make test-integration` (no
+`blog_test` database). Fixed with `git update-index --chmod=+x`. Note that
+`.gitattributes` was already correct and line endings were never the problem —
+the LF normalisation worked; it just does not cover file modes.
+
+### 5.2 A 500 on every token refresh — a foreign key ordering bug
+
+`make smoke` failed 4 of 46 checks. The API returned `500 internal_error` on
+`POST /api/v1/auth/refresh`; the log gave the real reason:
+
+```
+insert or update on table "refresh_tokens" violates foreign key
+constraint "refresh_tokens_replaced_by_fkey" (SQLSTATE 23503)
+```
+
+`SessionRepository.Rotate` ran its `UPDATE ... SET replaced_by = $2` **before**
+the `INSERT` that creates the row `$2` refers to. `replaced_by` is a
+self-reference and the constraint is not deferrable, so Postgres rejected it
+immediately. Refresh-token rotation — and with it the theft-detection story this
+submission makes a point of — was completely broken.
+
+The fix was to insert the replacement first, then point the presented token at
+it. The concurrency guarantee is unchanged: the `revoked_at IS NULL` guard on
+the `UPDATE` still means exactly one of two concurrent refreshes wins, and a
+zero-row update still rolls the transaction back, discarding the insert.
+
+**Why the tests missed it.** `pgxmock` does not enforce foreign keys, and
+`TestSessionRepositoryRotateCommitsBothStatements` asserted the statements in
+their original — wrong — order. The test did not merely fail to catch the bug;
+it *encoded* it, and would have rejected the correct implementation. All three
+rotation tests were updated, and the happy-path test now documents that the
+ordering is load-bearing rather than incidental.
+
+This is precisely the risk §6 names below: mock-verified SQL cannot prove
+validity against a schema. The warning was written before the bug was found, and
+the bug is exactly the shape the warning predicted.
+
+### 5.3 A test that only passed because nothing was listening
+
+With the stack running, `TestReadinessFailsWithoutADatabase` failed: it expected
+`503 degraded` and got `200 ok`. The test built the router against
+`127.0.0.1:5432` and relied on nothing being there — true on the original
+machine, false the moment `make up` works.
+
+So the test passed for the wrong reason and would fail for any reviewer running
+`make up && make test`, and on any CI runner with a Postgres service container.
+Fixed by pointing that one router at port 1, where nothing serves, which also
+keeps the probe's "must be bounded" assertion honest. The full suite now passes
+both with and without a live database.
+
+### 5.4 A documentation error: an inflated test-case count
+
+The docs claimed "618 cases". The measured figure is **481** — 344 top-level
+functions plus 137 subtests. The 618 came from adding the 137 subtests to a
+total that already included them. Corrected everywhere it appeared.
+
+It is a small number on a page of larger ones, and that is the point: a document
+whose whole argument is "measured, not estimated" cannot afford an arithmetic
+slip in its own evidence table.
+
+---
+
+## 6. What remains a risk
 
 Being specific is more useful than a disclaimer.
 
 | Risk | Assessment |
 |---|---|
-| **Unrun artefacts** | Docker, Compose, live migrations, the integration suite and the smoke script have not been executed. They are the most likely place for a defect. The Dockerfile and Compose file were reviewed line by line, but review is not execution |
-| **Section 1's SQL is mock-verified only** | `pgxmock` proves the statements are issued with the right arguments and that transactions commit or roll back; it cannot prove the SQL is valid against the schema. That is precisely what the integration suite exists for — and it has not been run. (Section 3's SQL *was* executed, which is why four defects surfaced there and none here — an asymmetry worth reading as a warning, not as a compliment) |
+| **Unrun artefacts** | *Resolved.* Docker, Compose, live migrations, the integration suite, the smoke script and the race detector have now all been executed. This was correctly identified as the most likely place for a defect: three of the seven failed. See [§5](#5-defects-found-by-running-the-previously-unverified-checks) |
+| **Section 1's SQL is mock-verified only** | *Partly resolved, and the warning was right.* `pgxmock` proves the statements are issued with the right arguments and that transactions commit or roll back; it cannot prove the SQL is valid against the schema. Running the integration suite and the smoke script against a real PostgreSQL found exactly that class of defect — a foreign-key ordering bug in refresh-token rotation ([§5.2](#52-a-500-on-every-token-refresh--a-foreign-key-ordering-bug)). The mock had asserted the wrong order and would have rejected the fix. Residual risk: the integration suite covers the main paths, not every statement |
 | **PGlite is not a production server** | PostgreSQL 18.3 compiled to WebAssembly is the genuine source, but single-connection and 32-bit. Plan *shape* and constraint behaviour transfer; concurrency behaviour under real load does not |
 | **No load testing** | Every performance statement is reasoning about algorithms and index shapes, not measurement. The e-commerce capacity figures are labelled as estimates with their derivation shown, precisely so they are not mistaken for data |
 | **The architecture documents are designs** | Sections 2 and 3 are written deliverables. Nothing in section 2 has been built |
@@ -175,7 +264,7 @@ Being specific is more useful than a disclaimer.
 
 ---
 
-## 6. Ownership
+## 7. Ownership
 
 I can explain and defend every decision in this submission: why comment creation
 increments the counter *before* inserting, why drafts return 404 rather than
@@ -187,12 +276,16 @@ or the README's trade-offs table. Where something was not verified, it says so.
 
 The most useful thing AI did here was not writing code faster. It was making it
 cheap enough to *execute* the verification — the Mermaid parser, the PGlite
-harness, the OpenAPI contract test — that assertions became checks. Five real
-defects came out of that, and none of them would have been found by review.
+harness, the OpenAPI contract test, and later the full Docker stack — that
+assertions became checks. **Eight real defects came out of that**, and none of
+them would have been found by review. The three in
+[§5](#5-defects-found-by-running-the-previously-unverified-checks) are the most
+pointed, because they sat behind checks this document had honestly marked as
+unrun rather than quietly ticked.
 
 ---
 
-## 7. Reproducing the verification
+## 8. Reproducing the verification
 
 ```bash
 # Go: build, vet, format, test, coverage
@@ -210,6 +303,16 @@ node scripts/check-mermaid.mjs docs/*.md          # → 14 parsed, 0 failures
 # Section 3 SQL against real PostgreSQL
 npm install --no-save @electric-sql/pglite
 node scripts/verify-sql.mjs                       # → all checks passed
+
+# The database-backed checks (needs Docker)
+make docker-build                                 # → image builds
+make up                                           # → postgres → migrate → api, all healthy
+make test-integration                             # → 12 functions, 25 cases, 0 skipped
+make smoke                                        # → all 46 checks passed
+make test-race                                    # → clean, 15 packages
+
+# The live migration runner, including rollback
+make migrate-status && make migrate-down && make migrate-up
 ```
 
 The two Node scripts are committed for exactly this reason: a verification claim

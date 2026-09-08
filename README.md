@@ -51,9 +51,16 @@ Everything in this table was executed. Nothing is estimated.
 | Build | `go build ./...` | ✅ clean |
 | Vet | `go vet ./...` and `go vet -tags=integration ./...` | ✅ no findings |
 | Format | `gofmt -l .` | ✅ no output |
-| Unit + HTTP tests | `go test ./...` | ✅ **344 test functions, 618 cases with subtests, all passing** |
+| Unit + HTTP tests | `go test ./...` | ✅ **344 test functions, 481 cases with subtests, all passing** |
 | Coverage | `go test -covermode=atomic -coverprofile=...` | ✅ **71.5% of statements** ([breakdown](#tests-and-coverage)) |
+| Race detector | `make test-race` | ✅ **clean across all 15 packages**, with and without a live database |
 | OpenAPI ↔ router contract | `go test ./tests/` | ✅ **23 routes matched in both directions** |
+| **Docker image build** | `make docker-build` | ✅ **multi-stage build succeeds; distroless runtime** |
+| **`docker compose up`** | `make up` | ✅ **Postgres healthy → migrations exit 0 → API healthy**, ordering enforced by conditions |
+| **Health probes** | `curl /healthz`, `/readyz` | ✅ **200 each; `/readyz` reports the database check** |
+| **The Go migration runner, live** | `make migrate-up` / `migrate-down` / `migrate-status` | ✅ **up, down and re-up against PostgreSQL 16.15; `down` leaves only `schema_migrations`** |
+| **Integration suite** | `make test-integration` | ✅ **12 test functions, 25 cases, 0 skipped** |
+| **End-to-end smoke test** | `make smoke` | ✅ **all 46 checks passed** against the Compose stack |
 | Mermaid diagrams | `node scripts/check-mermaid.mjs docs/*.md` | ✅ **14 diagrams parsed by Mermaid 11.17.2** |
 | **Blog API migration** | `node scripts/verify-sql.mjs` | ✅ **up and down apply; 10 constraints reject invalid rows; slug reuse, composite FK, full-text search and the `updated_at` trigger all confirmed** |
 | Social-media SQL | `node scripts/verify-sql.mjs` | ✅ **22 statements executed, 7 counters reconciled, 11 invalid writes rejected** |
@@ -64,21 +71,34 @@ planner and constraint machinery. That run found
 [four real defects in section 3](docs/social-media-database-design.md#8-defects-found-by-actually-running-this),
 all fixed.
 
+### The linter
+
+`make lint` reports **four findings, all of which are deliberately left
+standing**. A linter is an advisor, not an authority:
+
+| Finding | Where | Why it stands |
+|---|---|---|
+| `errcheck` ×2 | `internal/platform/httpx/request_test.go` | `requireCode` returns `*apierr.Error` so a caller *may* inspect it further; it already asserts internally. Because that type satisfies `error`, errcheck misreads an ignored convenience return as an unhandled error. False positive. |
+| `gosimple` S1016 ×2 | `internal/post/service.go`, `internal/user/handler.go` | Suggests type-converting `registerRequest`→`RegisterInput` and `ListInput`→`ListFilter`. Accepting it would couple the HTTP DTO to the domain input: the structs would have to stay field-identical forever, and a field added to the wire model would silently reach the domain. The explicit mapping *is* the separation this API is supposed to have. |
+
+Note that the widely-installed golangci-lint v1.x before v1.64 cannot analyse a
+Go 1.24 module at all — it reports every package as a `typecheck` failure
+("could not load export data: unsupported version: 2"). If you see that, the
+linter is too old; it is not a finding about this code.
+
 ### What was *not* verified, and why
 
 Being straight about this matters more than a longer list of green ticks.
+Everything in the first table above has now been executed. Two things have not:
 
 | Not verified | Reason | How to verify it |
 |---|---|---|
-| **Docker build and `docker compose up`** | Docker is not installed on the machine this was developed on | `make docker-build`, then `make up` |
-| **The Go migration runner against a live server** | No local PostgreSQL. The *SQL* is verified (above); the runner's advisory lock, checksum enforcement and `schema_migrations` bookkeeping are not | `make migrate-up && make migrate-status` |
-| **The `integration` test suite** | Needs a real database | `make up && make test-integration` |
-| **`scripts/smoke.sh`** | Needs a running server | `make up && ./scripts/smoke.sh` |
-| **The race detector** | `-race` needs cgo and no C toolchain is installed here | `make test-race`, or see [Troubleshooting](#troubleshooting) for a Docker one-liner |
+| **Behaviour under real concurrent load** | No load-generation was run. The race detector proves the absence of *data races*, which is not the same as proving throughput or the rate limiter's behaviour under contention | A load tool such as `k6` or `vegeta` against `make up` |
+| **Deployment to a cluster** | No Kubernetes manifests are included; the deployment discussion in the architecture document is a design, not a running system | Out of scope for this assessment |
 
-The integration suite and the smoke script exist and compile — `go vet
--tags=integration ./...` passes — but they have not been *run*, and this README
-does not pretend otherwise.
+The verification environment: macOS 26.5.2 on arm64, Docker Desktop 20.10.17
+with Compose v2.7.0, PostgreSQL 16.15 in the Compose stack, Go 1.24.3, and
+golangci-lint v1.64.8.
 
 ---
 
@@ -327,8 +347,11 @@ real schema, that 13 constraints actually reject what they claim to, that the
 comment counter stays correct under **20 concurrent writers**, and that exactly
 one of **8 racing refresh-token rotations** wins.
 
-> These have **not been run** — no database on this machine. They compile and
-> `go vet -tags=integration ./...` passes.
+> Verified: **12 test functions, 25 cases, 0 skipped**, against PostgreSQL 16.15
+> from the Compose stack. This suite is what caught the refresh-token rotation
+> defect described in
+> [ai-usage.md §5.2](docs/ai-usage.md#52-a-500-on-every-token-refresh--a-foreign-key-ordering-bug) —
+> a foreign key a mock cannot enforce.
 
 ### Race detector
 
@@ -336,7 +359,8 @@ one of **8 racing refresh-token rotations** wins.
 make test-race     # CGO_ENABLED=1 go test -race -count=1 ./...
 ```
 
-> Not run here: `-race` requires cgo and no C toolchain is installed. See
+> Verified clean across all 15 packages, both with and without a live database
+> reachable on `localhost:5432`. If cgo is unavailable in your environment, see
 > [Troubleshooting](#troubleshooting) for a Docker one-liner.
 
 ---
@@ -619,7 +643,8 @@ structured logs), and a token deny-list for instant revocation.
 
 **Would do next, in order:**
 
-1. Run everything in the unverified list, on a machine with Docker.
+1. Load testing — the one claim class still unmeasured; the race detector proves
+   the absence of data races, not throughput.
 2. Prometheus metrics and OpenTelemetry tracing — the code is structured for it;
    the request ID is already the correlation point.
 3. Email verification and password reset.
