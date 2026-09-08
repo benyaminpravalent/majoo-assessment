@@ -1,0 +1,14 @@
+# Normalise to LF in the repository. The container image and the shell scripts
+# are Linux artefacts; a CRLF checkout on Windows must not leak into them.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.sql  text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+Dockerfile text eol=lf
+Makefile   text eol=lf
+
+# Never diff or merge these as text.
+*.png binary
+*.pdf binary
