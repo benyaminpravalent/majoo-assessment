@@ -130,3 +130,44 @@ func TestFromContextFallsBackToDefault(t *testing.T) {
 	assert.NotNil(t, FromContext(context.Background()))
 	assert.NotNil(t, FromContext(WithLogger(context.Background(), nil)))
 }
+
+// TestParseLevelAcceptsEveryConfiguredSpelling covers each branch of the level
+// mapping. LOG_LEVEL is operator-facing configuration: a level that silently
+// falls back to info during an incident is the wrong time to discover a typo in
+// the mapping, and "warning" is the spelling people reach for first.
+func TestParseLevelAcceptsEveryConfiguredSpelling(t *testing.T) {
+	t.Parallel()
+
+	for name, want := range map[string]slog.Level{
+		"debug":   slog.LevelDebug,
+		"DEBUG":   slog.LevelDebug,
+		"info":    slog.LevelInfo,
+		"warn":    slog.LevelWarn,
+		"warning": slog.LevelWarn,
+		"WARNING": slog.LevelWarn,
+		"error":   slog.LevelError,
+		"ERROR":   slog.LevelError,
+		"":        slog.LevelInfo,
+		"verbose": slog.LevelInfo, // unknown falls back rather than failing
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, want, parseLevel(name))
+		})
+	}
+}
+
+// TestNewWritesTextWhenAsked covers the text branch of the format switch, which
+// docker-compose selects for the migrator so its output is readable in a
+// terminal rather than JSON.
+func TestNewWritesTextWhenAsked(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	New(&buf, "info", "text").Info("hello", "password", "hunter2")
+
+	out := buf.String()
+	assert.Contains(t, out, "msg=hello")
+	assert.NotContains(t, out, "hunter2", "redaction must apply to the text handler too")
+	assert.Contains(t, out, redactedPlaceholder)
+}

@@ -352,3 +352,69 @@ func anyArgs(n int) []any {
 	}
 	return args
 }
+
+// UpdateProfile is the only write path on users after registration. These tests
+// cover it directly: it had no coverage at all, and its RETURNING clause means
+// a scan mismatch would surface as a 500 rather than a wrong value.
+
+func TestRepositoryUpdateProfileReturnsTheFreshRow(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockPool(t)
+	repo := NewRepository(mock)
+
+	id := uuid.New()
+	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	updated := time.Now().UTC().Truncate(time.Second)
+
+	mock.ExpectQuery(`UPDATE users`).
+		WithArgs(id, "Ben S").
+		WillReturnRows(pgxmock.NewRows(userScanColumns()).
+			AddRow(id, "ben@example.com", "ben_siregar", "Ben S", "$2a$10$hash", domain.RoleUser, created, updated))
+
+	got, err := repo.UpdateProfile(context.Background(), id, "Ben S")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Ben S", got.DisplayName)
+	// The row comes back from RETURNING, so updated_at reflects the trigger's
+	// write rather than a value the application guessed.
+	assert.Equal(t, updated, got.UpdatedAt)
+	assert.NotEqual(t, got.CreatedAt, got.UpdatedAt)
+}
+
+func TestRepositoryUpdateProfileReturns404ForAnUnknownUser(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockPool(t)
+	repo := NewRepository(mock)
+
+	id := uuid.New()
+	mock.ExpectQuery(`UPDATE users`).
+		WithArgs(id, "Ghost").
+		WillReturnRows(pgxmock.NewRows(userScanColumns()))
+
+	_, err := repo.UpdateProfile(context.Background(), id, "Ghost")
+
+	appErr := apierr.From(err)
+	assert.Equal(t, apierr.CodeNotFound, appErr.Code)
+	assert.Equal(t, "user not found", appErr.Message)
+}
+
+func TestRepositoryUpdateProfileHidesDriverFailures(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockPool(t)
+	repo := NewRepository(mock)
+
+	id := uuid.New()
+	mock.ExpectQuery(`UPDATE users`).
+		WithArgs(id, "Ben S").
+		WillReturnError(errors.New("password authentication failed for user \"blog\""))
+
+	_, err := repo.UpdateProfile(context.Background(), id, "Ben S")
+
+	appErr := apierr.From(err)
+	assert.Equal(t, apierr.CodeInternal, appErr.Code)
+	assert.NotContains(t, appErr.Message, "password",
+		"the driver's text must never reach the client")
+}

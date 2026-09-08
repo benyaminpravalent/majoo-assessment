@@ -390,3 +390,86 @@ func TestLogoutAllEndpoint(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, int64(2), decodeData[logoutAllResponse](t, w).SessionsRevoked)
 }
+
+// The session endpoints' rejection paths. The brief asks specifically for
+// negative coverage of malformed authentication and invalid input, and these
+// are the paths a client hits when its stored token is truncated or absent.
+
+func TestRefreshEndpointRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPost, "/auth/refresh", `{"refresh_token":`, nil)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.NotEmpty(t, decodeError(t, w).Code)
+}
+
+func TestRefreshEndpointRejectsAnUnusableToken(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPost, "/auth/refresh", `{"refresh_token":"tiny"}`, nil)
+
+	// A token too short to be one of ours is rejected before any database work,
+	// so a flood of junk costs nothing.
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	assert.Equal(t, "refresh_token", decodeError(t, w).Fields[0].Field)
+}
+
+func TestLogoutEndpointRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPost, "/auth/logout", `not json`, nil)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestLogoutEndpointRejectsAnUnusableToken(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPost, "/auth/logout", `{"refresh_token":"tiny"}`, nil)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	assert.Equal(t, "refresh_token", decodeError(t, w).Fields[0].Field)
+}
+
+// LogoutAll and UpdateMe read the actor from the context. If the middleware were
+// ever unmounted the handler must refuse rather than act on a zero-valued actor
+// — which would be "log out user 00000000-...".
+func TestLogoutAllEndpointRequiresAnActor(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPost, "/auth/logout-all", "", nil)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestUpdateMeEndpointRequiresAnActor(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+
+	w := f.do(t, http.MethodPatch, "/users/me", `{"display_name":"Ben"}`, nil)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestUpdateMeEndpointRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+	actor := &domain.Actor{UserID: uuid.New(), Role: domain.RoleUser}
+
+	w := f.do(t, http.MethodPatch, "/users/me", `{"display_name":`, actor)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}

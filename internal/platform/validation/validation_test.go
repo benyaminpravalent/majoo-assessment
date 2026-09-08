@@ -164,3 +164,93 @@ func repeat(n int) string {
 	}
 	return string(b)
 }
+
+// otherRules exercises the validation tags the registration DTO does not use.
+// Each rule's message is part of the API's contract — it is what a client is
+// told to fix — so an unmapped tag silently degrading to the generic fallback
+// is a real regression.
+type otherRules struct {
+	Code    string `json:"code"    validate:"len=4"`
+	ID      string `json:"id"      validate:"uuid"`
+	Handle  string `json:"handle"  validate:"alphanum"`
+	Website string `json:"website" validate:"url"`
+	Age     int    `json:"age"     validate:"gte=18"`
+	Score   int    `json:"score"   validate:"lte=100"`
+	Title   string `json:"title"   validate:"excludesall=!@#"`
+	Count   int    `json:"count"   validate:"min=5"`
+	Limit   int    `json:"limit"   validate:"max=10"`
+	Prefix  string `json:"prefix"  validate:"startswith=ab"`
+}
+
+func validOther() otherRules {
+	return otherRules{
+		Code:    "abcd",
+		ID:      "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+		Handle:  "abc123",
+		Website: "https://example.com",
+		Age:     20,
+		Score:   50,
+		Title:   "a clean title",
+		Count:   6,
+		Limit:   8,
+		Prefix:  "abcdef",
+	}
+}
+
+func TestStructMessagesCoverTheRemainingRules(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		mutate func(*otherRules)
+		field  string
+		want   string
+	}{
+		"wrong length":   {func(o *otherRules) { o.Code = "abc" }, "code", "must be exactly 4 characters long"},
+		"not a uuid":     {func(o *otherRules) { o.ID = "nope" }, "id", "must be a valid UUID"},
+		"not alphanum":   {func(o *otherRules) { o.Handle = "abc-123" }, "handle", "must contain only letters and digits"},
+		"not a url":      {func(o *otherRules) { o.Website = "not a url" }, "website", "must be a valid URL"},
+		"below gte":      {func(o *otherRules) { o.Age = 17 }, "age", "must be greater than or equal to 18"},
+		"above lte":      {func(o *otherRules) { o.Score = 101 }, "score", "must be less than or equal to 100"},
+		"excluded chars": {func(o *otherRules) { o.Title = "hey!" }, "title", "must not contain any of the characters: !@#"},
+		"numeric min":    {func(o *otherRules) { o.Count = 4 }, "count", "must be at least 5"},
+		"numeric max":    {func(o *otherRules) { o.Limit = 11 }, "limit", "must be at most 10"},
+		"unmapped rule":  {func(o *otherRules) { o.Prefix = "zz" }, "prefix", `failed the "startswith" rule (ab)`},
+	}
+
+	v := New()
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			in := validOther()
+			tc.mutate(&in)
+
+			err := v.Struct(in)
+
+			require.Error(t, err)
+			fields := fieldMap(t, err)
+			require.Contains(t, fields, tc.field)
+			assert.Equal(t, tc.want, fields[tc.field])
+		})
+	}
+}
+
+// The numeric min/max messages must not claim "characters": the same tag on an
+// integer and on a string mean different things, and telling a client that 4 is
+// "at least 5 characters long" is nonsense.
+func TestNumericAndStringLengthMessagesDiffer(t *testing.T) {
+	t.Parallel()
+
+	numeric := validOther()
+	numeric.Count = 4
+	assert.NotContains(t, fieldMap(t, New().Struct(numeric))["count"], "characters")
+
+	text := valid()
+	text.Password = "short"
+	assert.Contains(t, fieldMap(t, New().Struct(text))["password"], "characters")
+}
+
+func TestStructAcceptsValidOtherRules(t *testing.T) {
+	t.Parallel()
+	assert.NoError(t, New().Struct(validOther()))
+}
