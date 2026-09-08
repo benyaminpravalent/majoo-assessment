@@ -51,9 +51,9 @@ Everything in this table was executed. Nothing is estimated.
 | Build | `go build ./...` | ✅ clean |
 | Vet | `go vet ./...` and `go vet -tags=integration ./...` | ✅ no findings |
 | Format | `gofmt -l .` | ✅ no output |
-| Unit + HTTP tests | `go test ./...` | ✅ **344 test functions, 481 cases with subtests, all passing** |
-| Coverage | `go test -covermode=atomic -coverprofile=...` | ✅ **71.5% of statements** ([breakdown](#tests-and-coverage)) |
-| Race detector | `make test-race` | ✅ **clean across all 15 packages**, with and without a live database |
+| Unit + HTTP tests | `go test ./...` | ✅ **379 test functions, 538 cases with subtests, all passing** |
+| Coverage | `go test -covermode=atomic -coverprofile=...` | ✅ **80.4% of statements** ([breakdown](#tests-and-coverage)) |
+| Race detector | `make test-race` | ✅ **clean across all 16 packages**, with and without a live database |
 | OpenAPI ↔ router contract | `go test ./tests/` | ✅ **23 routes matched in both directions** |
 | **Docker image build** | `make docker-build` | ✅ **multi-stage build succeeds; distroless runtime** |
 | **`docker compose up`** | `make up` | ✅ **Postgres healthy → migrations exit 0 → API healthy**, ordering enforced by conditions |
@@ -274,43 +274,49 @@ go tool cover -func=coverage.out | tail -1
 go tool cover -html=coverage.out -o coverage.html                # browsable
 ```
 
-### Verified result: 71.5% of statements
+### Verified result: 80.4% of statements
 
 ```
 internal/domain                   100.0%
 internal/health                   100.0%
 internal/platform/apierr           97.2%
+internal/platform/logging          96.4%
 internal/middleware                96.1%
 internal/config                    94.7%
 internal/platform/httpx            93.9%
+internal/server                    93.4%
 internal/platform/events           92.6%
+internal/platform/validation       91.1%
 internal/post                      89.7%
 internal/auth                      89.5%
-internal/platform/logging          85.7%
+internal/user                      86.3%
 internal/comment                   84.0%
-internal/user                      78.4%
-internal/platform/validation       66.7%
-internal/platform/postgres         24.2%   ← DB-dependent; see below
-internal/server                     0.0%   ← wiring; see below
+internal/platform/postgres         40.1%   ← DB-dependent; see below
 cmd/api, cmd/migrate                0.0%   ← process entry points
 ------------------------------------------
-total                              71.5%
+total                              80.4%
 ```
 
-**Where the uncovered code is, honestly.** The three low numbers are not
-oversights:
+**Where the uncovered code is, honestly.** Two numbers stay low, and neither is
+an oversight:
 
-- `internal/platform/postgres` (24.2%) — the covered part is the pure logic:
-  error classification, migration file parsing, checksums. The rest opens
-  connections and runs migrations, and is exercised by the `integration` suite.
-- `internal/server` (0.0%) — dependency wiring. It is exercised end to end by
-  `tests/openapi_contract_test.go`, which builds the real router and sends real
-  requests through the full middleware stack; those statements are attributed to
-  the packages they call.
-- `cmd/*` (0.0%) — `main` and flag handling.
+- `internal/platform/postgres` (40.1%) — the covered part is everything that can
+  be tested without a server: error classification, migration file parsing,
+  checksums, and the `InTx` transaction boundary (commit, rollback, rollback on
+  panic, and rollback after the caller's context is already cancelled). The
+  remainder is the migration runner's advisory lock and its `schema_migrations`
+  bookkeeping, which need a real connection because the lock is session-scoped;
+  the `integration` suite and `make migrate-up`/`migrate-down` exercise it.
+- `cmd/*` (0.0%) — `main`, signal handling and flag parsing.
 
-Chasing 90% by testing those would mean tests that assert the wiring is wired.
-The number that matters is the 84–100% across the packages that hold logic.
+`internal/server` was 0.0% and is now 93.4%. That change is worth a note,
+because the old entry claimed the package was covered indirectly by
+`tests/openapi_contract_test.go`. That was true of the *router*, but coverage is
+attributed per package under test, so nothing there counted — and more to the
+point, the contract test never exercised the **lifecycle**: `Run`, graceful
+shutdown, the listener-failure path, or the audit handler. Graceful shutdown is
+something the brief asks for by name, and it had no direct test at all. It does
+now, including an assertion that the port is actually released.
 
 ### What the tests actually check
 
@@ -326,6 +332,7 @@ Coverage counts statements; these check behaviour:
 | **Validation** | Every field reported at once; JSON names not Go names; unknown fields rejected |
 | **Pagination edges** | `page=0`, negative, non-numeric, over-maximum, page past the end, empty page as `[]` not `null` |
 | **Concurrency** | Rate limiter under 20 goroutines with a fake clock; event bus with 16 concurrent publishers racing a shutdown |
+| **Lifecycle** | `Run` returns cleanly when its context is cancelled **and the port is released**; a listener that cannot bind still releases the background goroutines; `InTx` rolls back on error, on panic, and when the caller's context is already dead |
 | **Redaction** | Credential-shaped log keys replaced — this test **found a real gap**, `X-Api-Key` was not matched, and the fix is in `internal/platform/logging` |
 | **Contract** | Every one of the 23 routes exists in `api/openapi.yaml`, and every documented operation exists in the router |
 
@@ -359,7 +366,7 @@ one of **8 racing refresh-token rotations** wins.
 make test-race     # CGO_ENABLED=1 go test -race -count=1 ./...
 ```
 
-> Verified clean across all 15 packages, both with and without a live database
+> Verified clean across all 16 packages, both with and without a live database
 > reachable on `localhost:5432`. If cgo is unavailable in your environment, see
 > [Troubleshooting](#troubleshooting) for a Docker one-liner.
 

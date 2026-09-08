@@ -26,9 +26,9 @@ as a second application. Its skills appear where they do real work — see the
 | Check | Result |
 |---|---|
 | `go build ./...` · `go vet ./...` · `gofmt -l .` | clean |
-| `go test ./...` | **344 test functions, 481 cases, all passing** |
-| Coverage | **71.5% of statements** — 84–100% across the packages holding logic |
-| Race detector | **clean across all 15 packages** |
+| `go test ./...` | **379 test functions, 538 cases, all passing** |
+| Coverage | **80.4% of statements** — 84–100% across the packages holding logic |
+| Race detector | **clean across all 16 packages** |
 | OpenAPI ↔ router contract test | **23 routes matched in both directions** |
 | Docker build and `docker compose up` | **image builds; Postgres → migrations → API all healthy** |
 | Live migration runner | **up, down and re-up against PostgreSQL 16.15** |

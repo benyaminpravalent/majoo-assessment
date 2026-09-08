@@ -145,13 +145,13 @@ covered:
 
 | Requirement | Evidence | Status |
 |---|---|---|
-| Unit tests for business logic | 344 test functions, 481 cases | ✅ |
+| Unit tests for business logic | 379 test functions, 538 cases | ✅ |
 | HTTP handler tests | 51 across three features, through the real router | ✅ |
 | Repository/database tests | `pgxmock` for SQL and transactions; a build-tagged suite run against PostgreSQL 16.15 — 12 functions, 25 cases | ✅ |
 | Authentication and authorization tests | 23 token + middleware tests, plus ownership tests per feature | ✅ |
 | Validation and error-path tests | Throughout | ✅ |
 | Transaction rollback tests | All four boundaries, both directions | ✅ |
-| Race-detector compatibility | `make test-race` clean across all 15 packages | ✅ |
+| Race-detector compatibility | `make test-race` clean across all 16 packages | ✅ |
 | Invalid credentials | `TestLoginRejectsWrongPassword` | ✅ |
 | Missing/malformed authentication | 5 cases in `TestRequireRejectsMissingOrMalformedHeader` | ✅ |
 | Unauthorized ownership access | Post and comment, read and write | ✅ |
@@ -160,7 +160,7 @@ covered:
 | Missing resources | 404 paths throughout | ✅ |
 | Database conflicts | Unique, foreign-key and check violations classified by constraint name | ✅ |
 | Pagination edge cases | 9 cases | ✅ |
-| **A real coverage report, not an invented number** | **71.5%**, per-package breakdown in the README | ✅ |
+| **A real coverage report, not an invented number** | **80.4%**, per-package breakdown in the README | ✅ |
 
 ### Required check runs
 
@@ -170,7 +170,7 @@ covered:
 | `go vet` | `go vet ./...` and `-tags=integration` | ✅ clean |
 | Unit and integration tests | `go test ./...` | ✅ all pass / ⚠️ integration unrun |
 | Race detector | `go test -race ./...` | ⚠️ needs cgo |
-| Coverage | `go tool cover -func` | ✅ 71.5% |
+| Coverage | `go tool cover -func` | ✅ 80.4% |
 | Linter | `make lint` | ⚠️ golangci-lint not installed; the target says so and continues |
 | Docker build | `docker build .` | ⚠️ Docker not installed |
 | Migration verification | The SQL: `node scripts/verify-sql.mjs` ✅. The Go runner against a live server: ⚠️ |
@@ -331,7 +331,7 @@ Feed and cache strategy:
 | README — architecture explanation | [Architecture](../README.md#architecture) | ✅ |
 | README — technology justification | [Technology choices](../README.md#technology-choices) + 12 ADRs | ✅ |
 | README — limitations and improvements | [Known limitations](../README.md#known-limitations), [Future improvements](../README.md#future-improvements) | ✅ |
-| README — test coverage report | [Tests and coverage](../README.md#tests-and-coverage), **71.5% measured** | ✅ |
+| README — test coverage report | [Tests and coverage](../README.md#tests-and-coverage), **80.4% measured** | ✅ |
 | Live demo (optional) | Not deployed | — |
 | AI usage disclosure | [`docs/ai-usage.md`](ai-usage.md) | ✅ |
 

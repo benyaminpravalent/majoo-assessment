@@ -53,8 +53,8 @@ ways that read well.
 | It compiles | `go build ./...` after every meaningful change |
 | No vet findings | `go vet ./...` **and** `go vet -tags=integration ./...` |
 | Formatted | `gofmt -l .` — must produce no output |
-| Tests pass | `go test -count=1 ./...` — 344 functions, 481 cases |
-| Coverage is 71.5% | `go tool cover -func`, read off the tool. Not estimated, not rounded up |
+| Tests pass | `go test -count=1 ./...` — 379 functions, 538 cases |
+| Coverage is 80.4% | `go tool cover -func`, read off the tool. Not estimated, not rounded up |
 | The OpenAPI spec matches the code | A contract test walks Chi's routes and compares both directions — 23 operations |
 | The Mermaid diagrams render | Parsed by Mermaid 11.17.2 itself via jsdom, not by eye |
 | The section-3 SQL is valid | Executed against real PostgreSQL 18.3 (PGlite/WASM): schema, indexes, seed, and all 22 queries with bound parameters |
@@ -239,13 +239,47 @@ both with and without a live database.
 
 ### 5.4 A documentation error: an inflated test-case count
 
-The docs claimed "618 cases". The measured figure is **481** — 344 top-level
-functions plus 137 subtests. The 618 came from adding the 137 subtests to a
-total that already included them. Corrected everywhere it appeared.
+The docs claimed "618 cases" against a suite that then held 344 test functions.
+The measured figure at that point was **481** — 344 top-level functions plus 137
+subtests. The 618 came from adding the 137 subtests to a total that already
+included them. Corrected everywhere it appeared.
+
+(The suite has since grown to 379 functions and 538 cases; see
+[§5.5](#55-raising-coverage-from-715-to-804). The arithmetic above is recorded
+as it stood when the error was found.)
 
 It is a small number on a page of larger ones, and that is the point: a document
 whose whole argument is "measured, not estimated" cannot afford an arithmetic
 slip in its own evidence table.
+
+### 5.5 Raising coverage from 71.5% to 80.4%
+
+Coverage was raised deliberately, by testing code that had none — not by
+lowering the bar or changing how it is measured.
+
+One measurement question came up and was **declined**. Running
+`go test -coverpkg=./... ./...` reports **76.1%** instead of 71.5%, because it
+credits cross-package execution: the contract test in `tests/` really does drive
+`internal/server`, and repository tests really do drive `postgres.InTx`. That is
+a defensible way to measure, and it would have closed half the gap for free. It
+was not adopted, because switching the command that produces the headline number
+*while trying to raise that number* is indistinguishable from gaming it. The
+plain per-package `go test ./...` figure is still what the README quotes.
+
+What was written instead:
+
+| Package | Before | After | What was added |
+|---|---|---|---|
+| `internal/server` | 0.0% | 93.4% | The package had **no test file**. Graceful shutdown — named explicitly in the brief — had no direct test: `Run` returning cleanly on cancellation, the port actually being released, the listener-failure path still releasing background goroutines, and the audit handler preserving every event field |
+| `internal/platform/validation` | 66.7% | 91.1% | Every unmapped branch of `message()`. These strings are API contract — they are what a client is told to fix — and an unmapped tag silently degrades to a generic fallback |
+| `internal/platform/postgres` | 24.2% | 40.1% | `InTx` directly: commit, rollback, **rollback on panic**, and rollback when the caller's context is already cancelled — the last being the documented reason the rollback uses a fresh context |
+| `internal/user` | 78.4% | 86.3% | `UpdateProfile` had **0% coverage**, plus the session endpoints' rejection paths |
+| `internal/platform/logging` | 85.7% | 96.4% | Every `LOG_LEVEL` spelling, including `warning`, and the text-handler branch the migrator uses |
+
+`cmd/api` and `cmd/migrate` remain at 0%, and the migration runner's advisory
+lock stays uncovered because a session-scoped lock needs a real connection. Both
+are stated in the README rather than papered over: coverage bought by asserting
+that wiring is wired would raise the number and prove nothing.
 
 ---
 
@@ -291,7 +325,7 @@ unrun rather than quietly ticked.
 # Go: build, vet, format, test, coverage
 go build ./... && go vet ./... && gofmt -l .
 go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
-go tool cover -func=coverage.out | tail -1        # → total: 71.5%
+go tool cover -func=coverage.out | tail -1        # → total: 80.4%
 
 # OpenAPI ↔ router contract
 go test -count=1 -v ./tests/
@@ -309,7 +343,7 @@ make docker-build                                 # → image builds
 make up                                           # → postgres → migrate → api, all healthy
 make test-integration                             # → 12 functions, 25 cases, 0 skipped
 make smoke                                        # → all 46 checks passed
-make test-race                                    # → clean, 15 packages
+make test-race                                    # → clean, 16 packages
 
 # The live migration runner, including rollback
 make migrate-status && make migrate-down && make migrate-up
