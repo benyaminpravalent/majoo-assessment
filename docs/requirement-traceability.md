@@ -104,7 +104,7 @@ concurrency skills it targets are demonstrated where they do real work — see
 | Indexes matching common queries | 6 purpose-built, each with a comment naming its query | ✅ |
 | Safe delete behaviour | Soft delete for content, cascade for ownership, `SET NULL` where a row must outlive its parent | ✅ |
 | Transaction boundaries | 4, all tested for commit and rollback | ✅ |
-| Migration rollback | `.down.sql` for every migration; `migrate down [n]` | ⚠️ needs a DB |
+| Migration rollback | `.down.sql` for every migration; `migrate down [n]` | ✅ up and down both applied and verified |
 | Prevent invalid state at the DB level | draft/published_at consistency, non-negative counters, composite FK forcing a reply onto its parent's post | ✅ |
 
 ### Security requirements
@@ -173,7 +173,7 @@ covered:
 | Coverage | `go tool cover -func` | ✅ 71.5% |
 | Linter | `make lint` | ⚠️ golangci-lint not installed; the target says so and continues |
 | Docker build | `docker build .` | ⚠️ Docker not installed |
-| Migration verification | `migrate up` / `status` | ⚠️ needs a DB |
+| Migration verification | The SQL: `node scripts/verify-sql.mjs` ✅. The Go runner against a live server: ⚠️ |
 | Basic API smoke test | `scripts/smoke.sh` | ⚠️ needs a running server |
 
 ### API documentation
@@ -347,7 +347,7 @@ toolchain.
 |---|---|
 | Docker image build | `make docker-build` |
 | Compose stack and health checks | `make up` |
-| Migrations against a live server | `make migrate-up && make migrate-status` |
+| The Go migration runner against a live server (the SQL itself is verified) | `make migrate-up && make migrate-status` |
 | Integration test suite | `make up && make test-integration` |
 | End-to-end smoke test | `make up && ./scripts/smoke.sh` |
 | Race detector | `make test-race` |

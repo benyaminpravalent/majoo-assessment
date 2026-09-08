@@ -55,7 +55,14 @@ Everything in this table was executed. Nothing is estimated.
 | Coverage | `go test -covermode=atomic -coverprofile=...` | ✅ **71.5% of statements** ([breakdown](#tests-and-coverage)) |
 | OpenAPI ↔ router contract | `go test ./tests/` | ✅ **23 routes matched in both directions** |
 | Mermaid diagrams | `node scripts/check-mermaid.mjs docs/*.md` | ✅ **14 diagrams parsed by Mermaid 11.17.2** |
-| Social-media SQL | `node scripts/verify-sql.mjs` | ✅ **22 statements executed, 7 counters reconciled, 11 invalid writes rejected**, against real PostgreSQL 18.3 |
+| **Blog API migration** | `node scripts/verify-sql.mjs` | ✅ **up and down apply; 10 constraints reject invalid rows; slug reuse, composite FK, full-text search and the `updated_at` trigger all confirmed** |
+| Social-media SQL | `node scripts/verify-sql.mjs` | ✅ **22 statements executed, 7 counters reconciled, 11 invalid writes rejected** |
+
+The last two ran against a genuine PostgreSQL engine — PostgreSQL 18.3 compiled
+to WebAssembly via PGlite, which is the real Postgres source including its
+planner and constraint machinery. That run found
+[four real defects in section 3](docs/social-media-database-design.md#8-defects-found-by-actually-running-this),
+all fixed.
 
 ### What was *not* verified, and why
 
@@ -64,7 +71,7 @@ Being straight about this matters more than a longer list of green ticks.
 | Not verified | Reason | How to verify it |
 |---|---|---|
 | **Docker build and `docker compose up`** | Docker is not installed on the machine this was developed on | `make docker-build`, then `make up` |
-| **Migrations against a live PostgreSQL server** | No local PostgreSQL or `psql` | `make up` runs them; or `make migrate-up` |
+| **The Go migration runner against a live server** | No local PostgreSQL. The *SQL* is verified (above); the runner's advisory lock, checksum enforcement and `schema_migrations` bookkeeping are not | `make migrate-up && make migrate-status` |
 | **The `integration` test suite** | Needs a real database | `make up && make test-integration` |
 | **`scripts/smoke.sh`** | Needs a running server | `make up && ./scripts/smoke.sh` |
 | **The race detector** | `-race` needs cgo and no C toolchain is installed here | `make test-race`, or see [Troubleshooting](#troubleshooting) for a Docker one-liner |
@@ -72,12 +79,6 @@ Being straight about this matters more than a longer list of green ticks.
 The integration suite and the smoke script exist and compile — `go vet
 -tags=integration ./...` passes — but they have not been *run*, and this README
 does not pretend otherwise.
-
-The social-media SQL, by contrast, *was* run against a genuine PostgreSQL
-engine: PostgreSQL 18.3 compiled to WebAssembly via PGlite, which is the real
-Postgres source including its planner and constraint machinery. That run found
-[four real defects](docs/social-media-database-design.md#8-defects-found-by-actually-running-this),
-all fixed.
 
 ---
 

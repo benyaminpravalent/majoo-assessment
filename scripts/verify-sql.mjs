@@ -1,23 +1,31 @@
-// Verify the social-media database assessment against a real PostgreSQL engine.
+// Verify every piece of SQL in this repository against a real PostgreSQL engine.
 //
 //   npm install --no-save @electric-sql/pglite
 //   node scripts/verify-sql.mjs
 //
 // PGlite is PostgreSQL compiled to WebAssembly, so this runs the genuine query
 // planner and the genuine constraint machinery without needing a server
-// installed. It:
+// installed. Two parts:
 //
-//   1. applies schema.sql, indexes.sql and seed.sql;
-//   2. executes every statement in queries.sql with bound parameters;
-//   3. checks that every trigger-maintained counter agrees with the rows it
-//      counts;
-//   4. checks that each documented edge case is actually rejected;
-//   5. prints the EXPLAIN plan for the queries whose plan is claimed in
-//      queries.sql §13.
+//   Part 1 — the blog API's own migration (assessment section 1):
+//     applies migrations/0001_init.up.sql, confirms nine documented constraints
+//     reject invalid rows, confirms the partial unique index frees a slug on
+//     soft delete, confirms the composite foreign key forces a reply onto its
+//     parent's post, confirms full-text search and the updated_at trigger, then
+//     applies the down migration and confirms it leaves nothing behind.
 //
-// What it does NOT do is produce timings. The seed volumes are small and PGlite
-// is single-connection WebAssembly, so any wall-clock number here would say
-// nothing about production. Plan shape and index choice are what is verified.
+//   Part 2 — the social media assessment (section 3):
+//     applies schema.sql, indexes.sql and seed.sql; executes every statement in
+//     queries.sql with bound parameters; reconciles every trigger-maintained
+//     counter against the rows it counts; confirms each documented edge case is
+//     rejected; and prints the EXPLAIN plans claimed in queries.sql §13.
+//
+// What this does NOT do is produce timings, and it is not a substitute for
+// running the Go migration runner against a live server. The seed volumes are
+// small and PGlite is single-connection WebAssembly, so any wall-clock number
+// here would say nothing about production. What is verified is that the SQL is
+// valid, that the constraints behave as documented, and which index each query
+// chooses.
 //
 // Exit code 0 means everything passed.
 
@@ -30,7 +38,9 @@ import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sqlDir = path.join(here, '..', 'database-assessment');
+const migrationsDir = path.join(here, '..', 'migrations');
 const read = (f) => fs.readFileSync(path.join(sqlDir, f), 'utf8');
+const readMigration = (f) => fs.readFileSync(path.join(migrationsDir, f), 'utf8');
 
 let failures = 0;
 const ok = (msg) => console.log(`  ok    ${msg}`);
@@ -40,8 +50,130 @@ const fail = (msg, detail) => {
   if (detail) console.error(`        ${detail}`);
 };
 
+console.log(
+  (await (await PGlite.create()).query('select version()')).rows[0].version);
+
+// ===========================================================================
+// Part 1 — the blog API's migration (assessment section 1)
+// ===========================================================================
+{
+  console.log('\n== blog API migration: migrations/0001_init ==');
+  const mig = await PGlite.create();
+
+  try {
+    await mig.exec(readMigration('0001_init.up.sql'));
+    ok('0001_init.up.sql applies');
+  } catch (err) {
+    fail('0001_init.up.sql', err.message);
+    process.exit(1);
+  }
+
+  const tables = (await mig.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1`))
+    .rows.map((r) => r.table_name);
+  console.log(`        tables: ${tables.join(', ')}`);
+
+  const owner = '11111111-1111-4111-8111-111111111111';
+  await mig.query(
+    `INSERT INTO users (id, email, username, display_name, password_hash)
+     VALUES ($1, 'ben@example.com', 'ben', 'Ben', '$2a$10$0123456789012345678901')`, [owner]);
+
+  const rejects = {
+    'an email that is not folded to lower case': `INSERT INTO users (email, username, display_name, password_hash) VALUES ('Up@Example.com', 'up', 'U', '$2a$10$0123456789012345678901')`,
+    'a username containing a space': `INSERT INTO users (email, username, display_name, password_hash) VALUES ('a@b.co', 'has space', 'U', '$2a$10$0123456789012345678901')`,
+    'an unknown role': `INSERT INTO users (email, username, display_name, password_hash, role) VALUES ('c@b.co', 'cee', 'U', '$2a$10$0123456789012345678901', 'root')`,
+    'a duplicate email': `INSERT INTO users (email, username, display_name, password_hash) VALUES ('ben@example.com', 'ben2', 'B', '$2a$10$0123456789012345678901')`,
+    'a published post with no published_at': `INSERT INTO posts (author_id, title, slug, content, status) VALUES ('${owner}', 'A Title', 'a-title', 'body', 'published')`,
+    'a draft that has a published_at': `INSERT INTO posts (author_id, title, slug, content, status, published_at) VALUES ('${owner}', 'A Title', 'a-title-b', 'body', 'draft', now())`,
+    'a slug containing upper case': `INSERT INTO posts (author_id, title, slug, content, status) VALUES ('${owner}', 'A Title', 'Bad-Slug', 'body', 'draft')`,
+    'a title below the minimum length': `INSERT INTO posts (author_id, title, slug, content, status) VALUES ('${owner}', 'ab', 'ab-title', 'body', 'draft')`,
+    'a negative comment_count': `INSERT INTO posts (author_id, title, slug, content, status, comment_count) VALUES ('${owner}', 'A Title', 'a-title-c', 'body', 'draft', -1)`,
+    'a refresh-token digest of the wrong width': `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ('${owner}', '\\x0102'::bytea, now() + interval '1 day')`,
+  };
+  for (const [label, sql] of Object.entries(rejects)) {
+    try {
+      await mig.query(sql);
+      fail(`${label} was NOT rejected`);
+    } catch {
+      ok(`${label} — rejected`);
+    }
+  }
+
+  // The partial unique index must release a slug once the post is soft-deleted,
+  // which a table-level UNIQUE could not express.
+  const kept = '22222222-2222-4222-8222-222222222222';
+  await mig.query(
+    `INSERT INTO posts (id, author_id, title, slug, content, status)
+     VALUES ($1, $2, 'Same Slug Post', 'same-slug', 'body', 'draft')`, [kept, owner]);
+  try {
+    await mig.query(
+      `INSERT INTO posts (author_id, title, slug, content, status)
+       VALUES ($1, 'Same Slug Post', 'same-slug', 'body', 'draft')`, [owner]);
+    fail('a duplicate slug on a live post was NOT rejected');
+  } catch {
+    ok('a duplicate slug on a live post — rejected');
+  }
+  await mig.query(`UPDATE posts SET deleted_at = now() WHERE id = $1`, [kept]);
+  await mig.query(
+    `INSERT INTO posts (author_id, title, slug, content, status)
+     VALUES ($1, 'Same Slug Post', 'same-slug', 'body', 'draft')`, [owner]);
+  ok('the slug is reusable once the original is soft-deleted');
+
+  // The composite foreign key must force a reply onto its parent's post.
+  const postOne = (await mig.query(
+    `INSERT INTO posts (author_id, title, slug, content, status)
+     VALUES ($1, 'Post One', 'post-one', 'body', 'draft') RETURNING id`, [owner])).rows[0].id;
+  const postTwo = (await mig.query(
+    `INSERT INTO posts (author_id, title, slug, content, status)
+     VALUES ($1, 'Post Two', 'post-two', 'body', 'draft') RETURNING id`, [owner])).rows[0].id;
+  const root = (await mig.query(
+    `INSERT INTO comments (post_id, author_id, content) VALUES ($1, $2, 'root') RETURNING id`,
+    [postOne, owner])).rows[0].id;
+  try {
+    await mig.query(
+      `INSERT INTO comments (post_id, author_id, parent_id, content) VALUES ($1, $2, $3, 'cross')`,
+      [postTwo, owner, root]);
+    fail('a reply on a different post than its parent was NOT rejected');
+  } catch {
+    ok('a reply on a different post than its parent — rejected');
+  }
+  await mig.query(
+    `INSERT INTO comments (post_id, author_id, parent_id, content) VALUES ($1, $2, $3, 'reply')`,
+    [postOne, owner, root]);
+  ok('a reply on the same post is accepted');
+
+  // Full-text search over the STORED generated column.
+  await mig.query(
+    `INSERT INTO posts (author_id, title, slug, content, status, published_at)
+     VALUES ($1, 'Concurrency in Go', 'concurrency-in-go', 'Goroutines and channels', 'published', now())`,
+    [owner]);
+  const hits = await mig.query(
+    `SELECT title FROM posts WHERE search_vector @@ websearch_to_tsquery('english', 'goroutines')`);
+  if (hits.rows.length === 1) ok(`full-text search matches: ${hits.rows[0].title}`);
+  else fail(`full-text search returned ${hits.rows.length} rows, expected 1`);
+
+  // The updated_at trigger.
+  const before = (await mig.query(`SELECT updated_at FROM users WHERE id = $1`, [owner])).rows[0].updated_at;
+  await mig.query(`UPDATE users SET display_name = 'Ben S' WHERE id = $1`, [owner]);
+  const after = (await mig.query(`SELECT updated_at FROM users WHERE id = $1`, [owner])).rows[0].updated_at;
+  if (after > before) ok('the updated_at trigger fires on UPDATE');
+  else fail('the updated_at trigger did not fire');
+
+  // The down migration must fully reverse the up.
+  await mig.exec(readMigration('0001_init.down.sql'));
+  const remaining = Number((await mig.query(
+    `SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'`)).rows[0].count);
+  if (remaining === 0) ok('0001_init.down.sql leaves no tables behind');
+  else fail(`0001_init.down.sql left ${remaining} table(s) behind`);
+
+  await mig.close();
+}
+
+// ===========================================================================
+// Part 2 — the social media assessment (section 3)
+// ===========================================================================
+
 const db = await PGlite.create({ extensions: { citext, pg_trgm } });
-console.log((await db.query('select version()')).rows[0].version);
 
 // ---------------------------------------------------------------------------
 console.log('\n== applying schema, indexes and seed ==');
