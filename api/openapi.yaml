@@ -1,5 +1,1646 @@
 openapi: 3.0.3
+
 info:
-  title: placeholder
-  version: 0.0.0
-paths: {}
+  title: Majoo Blog API
+  version: "1.0.0"
+  description: |
+    A RESTful API for a simple blog system: accounts, sessions, posts and
+    comments.
+
+    ## Response shape
+
+    Every response that carries a body uses one of two envelopes.
+
+    Success:
+
+    ```json
+    { "data": { }, "pagination": { }, "request_id": "…" }
+    ```
+
+    Failure:
+
+    ```json
+    { "error": { "code": "…", "message": "…", "fields": [ ] }, "request_id": "…" }
+    ```
+
+    Clients should branch on `error.code`, which is stable, never on
+    `error.message`, which is written for humans.
+
+    ## Authentication
+
+    Authentication uses two tokens.
+
+    * The **access token** is a short-lived JWT (default 15 minutes) sent as
+      `Authorization: Bearer <token>`. It is stateless, so no database lookup
+      happens on the hot path — and therefore revoking it is not instant: the
+      access TTL is the worst-case revocation delay.
+    * The **refresh token** is a long-lived opaque string (default 30 days).
+      Only its SHA-256 digest is stored, and it is *rotated on every use*: the
+      token you present is revoked as its replacement is issued. Presenting an
+      already-rotated token is treated as evidence of theft and revokes every
+      session for that account.
+
+    ## Correlation
+
+    Every response carries `X-Request-Id`, echoed from the request when the
+    client supplies a safe one. Quote it when reporting a problem.
+
+    ## Rate limiting
+
+    Requests are rate limited per authenticated user, or per client address when
+    anonymous. `/auth/register`, `/auth/login` and `/auth/refresh` have a much
+    stricter budget. A throttled request returns `429` with a `Retry-After`
+    header.
+  contact:
+    name: Benyamin Pravalent Siregar
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes. Unversioned infrastructure endpoints.
+  - name: Meta
+    description: Service metadata and the API reference itself.
+  - name: Authentication
+    description: Registration, login, token refresh and session revocation.
+  - name: Users
+    description: Account profiles.
+  - name: Posts
+    description: Blog articles.
+  - name: Comments
+    description: Replies to posts.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /:
+    get:
+      tags: [Meta]
+      summary: Service metadata
+      description: Returns the service name, version and the location of the docs.
+      operationId: getServiceInfo
+      security: []
+      responses:
+        "200":
+          description: Service metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    additionalProperties:
+                      type: string
+              example:
+                data:
+                  service: majoo-blog-api
+                  version: v1.0.0
+                  api_base_path: /api/v1
+                  openapi: /openapi.yaml
+                  docs: /docs
+                  health: /healthz
+                  readiness: /readyz
+
+  /openapi.yaml:
+    get:
+      tags: [Meta]
+      summary: This document
+      description: The OpenAPI specification, served from the running binary.
+      operationId: getOpenAPISpec
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /docs:
+    get:
+      tags: [Meta]
+      summary: API reference UI
+      description: |
+        A Swagger UI page rendering `/openapi.yaml`. The UI assets load from a
+        CDN, so an offline reviewer should read `api/openapi.yaml` directly.
+      operationId: getDocsUI
+      security: []
+      responses:
+        "200":
+          description: An HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: |
+        Reports whether the process is running. It deliberately touches no
+        dependency: if it checked the database, a brief database outage would
+        fail liveness on every replica and get them all restarted, turning a
+        recoverable blip into an outage.
+      operationId: getLiveness
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: v1.0.0
+                uptime_seconds: 3612
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      description: |
+        Reports whether this replica can serve traffic, which includes reaching
+        the database. A failing readiness check should remove the replica from
+        the load-balancer rotation without killing it.
+      operationId: getReadiness
+      security: []
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: v1.0.0
+                uptime_seconds: 3612
+                checks:
+                  database:
+                    status: ok
+                    latency_ms: 2
+        "503":
+          description: A dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: degraded
+                version: v1.0.0
+                uptime_seconds: 3612
+                checks:
+                  database:
+                    status: error
+                    latency_ms: 2001
+                    error: "dial tcp 10.0.0.5:5432: connect: connection refused"
+
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register an account
+      description: |
+        Creates an account and returns it. It deliberately does **not** log the
+        new user in: registration and authentication stay separate flows, so a
+        future email-verification step does not have to throw tokens away.
+
+        New accounts always receive the `user` role. There is no request field
+        that can grant `admin`; promotion is an out-of-band database operation.
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              email: ben@example.com
+              username: ben_siregar
+              display_name: Ben Siregar
+              password: a-good-enough-password
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PrivateUser"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+              example:
+                data:
+                  id: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+                  email: ben@example.com
+                  username: ben_siregar
+                  display_name: Ben Siregar
+                  role: user
+                  created_at: "2026-04-01T09:00:00Z"
+                  updated_at: "2026-04-01T09:00:00Z"
+                request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The email address or username is already taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: conflict
+                  message: an account with this email address already exists
+                request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Log in
+      description: |
+        Exchanges credentials for an access/refresh token pair.
+
+        A wrong password and an unknown email address produce byte-identical
+        responses, and the unknown-account path performs a dummy hash
+        comparison, so neither the body nor the timing reveals whether an
+        address is registered.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: ben@example.com
+              password: a-good-enough-password
+      responses:
+        "200":
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/TokenPair"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+              example:
+                data:
+                  access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4ZjE0ZTQ1Zi1jZTlhLTRjMWItOWE1ZS0xZjdiMmMzZDRlNWYifQ.signature
+                  refresh_token: 9tQx1kJk8Zr2H4pS6vN0bW3yF7dL5cM8aE1gT2uY9oI
+                  token_type: Bearer
+                  expires_in: 900
+                  expires_at: "2026-04-01T09:15:00Z"
+                  user:
+                    id: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+                    email: ben@example.com
+                    username: ben_siregar
+                    display_name: Ben Siregar
+                    role: user
+                    created_at: "2026-04-01T09:00:00Z"
+                    updated_at: "2026-04-01T09:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The credentials are not valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: unauthorized
+                  message: invalid email or password
+                request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate a refresh token
+      description: |
+        Exchanges a refresh token for a new pair. The presented token is revoked
+        in the same transaction that stores its replacement, so it works exactly
+        once.
+
+        Presenting an already-rotated token is the signature of a stolen
+        refresh token being replayed: the request is refused **and** every
+        session for that account is revoked.
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+            example:
+              refresh_token: 9tQx1kJk8Zr2H4pS6vN0bW3yF7dL5cM8aE1gT2uY9oI
+      responses:
+        "200":
+          description: A new token pair. The previous refresh token is now dead.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/TokenPair"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The refresh token is unknown, expired, revoked or already rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+              example:
+                error:
+                  code: unauthorized
+                  message: invalid or expired refresh token
+                request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke one session
+      description: |
+        Revokes the presented refresh token. It takes no access token: holding
+        the refresh token is itself the proof, and a client whose access token
+        has already expired must still be able to log out.
+
+        Idempotent — revoking an unknown or already-revoked token succeeds, both
+        so retries are safe and so the endpoint does not confirm which tokens
+        exist.
+      operationId: logout
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+            example:
+              refresh_token: 9tQx1kJk8Zr2H4pS6vN0bW3yF7dL5cM8aE1gT2uY9oI
+      responses:
+        "204":
+          description: The session is revoked.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/auth/logout-all:
+    post:
+      tags: [Authentication]
+      summary: Revoke every session
+      description: Ends every live session belonging to the authenticated account.
+      operationId: logoutAll
+      responses:
+        "200":
+          description: The sessions were revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [sessions_revoked]
+                    properties:
+                      sessions_revoked:
+                        type: integer
+                        format: int64
+                        example: 3
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: Get your own profile
+      description: Returns the private projection, which includes the email address and role.
+      operationId: getCurrentUser
+      responses:
+        "200":
+          description: Your profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PrivateUser"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      tags: [Users]
+      summary: Update your own profile
+      description: |
+        Changes your display name. There is no path to another user's profile,
+        not even for an administrator: the actor's own ID is used, so the
+        authorisation question cannot be got wrong at this call site.
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileRequest"
+            example:
+              display_name: Ben P. Siregar
+      responses:
+        "200":
+          description: The updated profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PrivateUser"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/users/{userID}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Users]
+      summary: Get a public profile
+      description: |
+        Returns the public projection. Another account's email address and role
+        are never disclosed, authenticated or not.
+      operationId: getUserByID
+      security: []
+      responses:
+        "200":
+          description: The user's public profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PublicUser"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+              example:
+                data:
+                  id: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+                  username: ben_siregar
+                  display_name: Ben Siregar
+                  created_at: "2026-04-01T09:00:00Z"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts:
+    get:
+      tags: [Posts]
+      summary: List posts
+      description: |
+        Returns a page of posts, newest first — or by relevance when `q` is
+        given.
+
+        Visibility is applied by rewriting the query, not by discarding rows
+        afterwards, so `pagination.total_items` always counts exactly the posts
+        the caller may see:
+
+        * anonymous and non-owner callers see published posts only;
+        * an author filtering by their own `author_id` also sees their drafts;
+        * an administrator sees everything.
+
+        Asking for someone else's drafts is refused with `403` rather than
+        silently returning an empty page.
+      operationId: listPosts
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: author_id
+          in: query
+          description: Return only posts by this author.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          description: |
+            Return only posts in this state. Requesting `draft` requires that you
+            are the author (with `author_id` set to your own ID) or an
+            administrator.
+          required: false
+          schema:
+            type: string
+            enum: [draft, published]
+        - name: q
+          in: query
+          description: |
+            Full-text search over title and body, using PostgreSQL
+            `websearch_to_tsquery`, so quoted phrases and `-exclusions` work.
+            Results are ranked by relevance when this is present.
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+          example: concurrency
+      responses:
+        "200":
+          description: A page of posts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Post"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+              example:
+                data:
+                  - id: 3b1f8a2c-77de-4b0f-9c11-2a3b4c5d6e7f
+                    title: Concurrency in Go
+                    slug: concurrency-in-go
+                    content: Goroutines are cheap, but they are not free…
+                    status: published
+                    comment_count: 4
+                    author:
+                      id: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+                      username: ben_siregar
+                      display_name: Ben Siregar
+                    author_id: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+                    published_at: "2026-04-02T10:00:00Z"
+                    created_at: "2026-04-02T09:55:00Z"
+                    updated_at: "2026-04-02T10:00:00Z"
+                pagination:
+                  page: 1
+                  limit: 20
+                  total_items: 1
+                  total_pages: 1
+                  has_next: false
+                  has_prev: false
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Posts]
+      summary: Create a post
+      description: |
+        Creates a post authored by the caller. Omitting `status` creates a
+        draft, so a post is never published by accident.
+
+        The slug is derived from the title; if it collides with a live post, a
+        short random suffix is appended.
+      operationId: createPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePostRequest"
+            example:
+              title: Concurrency in Go
+              content: Goroutines are cheap, but they are not free…
+              status: published
+      responses:
+        "201":
+          description: The post was created.
+          headers:
+            Location:
+              description: The path of the new post.
+              schema:
+                type: string
+              example: /api/v1/posts/3b1f8a2c-77de-4b0f-9c11-2a3b4c5d6e7f
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Post"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts/{postID}:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    get:
+      tags: [Posts]
+      summary: Get a post
+      description: |
+        A draft is visible only to its author and to administrators. Everyone
+        else receives `404`, not `403`: a `403` would confirm that a post with
+        that ID exists, which is exactly what an unpublished draft must not
+        disclose.
+      operationId: getPost
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: The post.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Post"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      tags: [Posts]
+      summary: Update a post
+      description: |
+        Partially updates a post. Only the author and administrators may do so.
+
+        Every field is optional, but at least one must be present — an empty
+        body is rejected rather than treated as a successful no-op. Changing the
+        title also regenerates the slug.
+
+        Publishing a draft sets `published_at`; moving back to draft clears it,
+        which is what the database's `posts_published_at_consistent` constraint
+        requires. Re-publishing an already-published post does not move the
+        original publication time.
+      operationId: updatePost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePostRequest"
+            example:
+              title: Concurrency in Go, revisited
+              status: published
+      responses:
+        "200":
+          description: The updated post.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Post"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Posts]
+      summary: Delete a post
+      description: |
+        Soft-deletes the post and every comment on it, in one transaction, so a
+        deleted post can never leave live comments behind. Only the author and
+        administrators may delete. Deleting twice returns `404`.
+      operationId: deletePost
+      responses:
+        "204":
+          description: The post was deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts/{postID}/comments:
+    parameters:
+      - $ref: "#/components/parameters/PostID"
+    get:
+      tags: [Comments]
+      summary: List a post's comments
+      description: |
+        Returns a page of the post's comments, **oldest first** — reading order,
+        which is the opposite of the post listing.
+
+        The thread is only visible if the post is. A comment's `parent_id`
+        identifies its parent; clients assemble the tree.
+      operationId: listComments
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of comments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Comment"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      tags: [Comments]
+      summary: Comment on a post
+      description: |
+        Adds a comment. Supplying `parent_id` makes it a reply; the parent must
+        be a comment on the same post, which a composite foreign key enforces in
+        the database rather than only in application code.
+
+        Commenting on a post you cannot see returns `404`, matching what a read
+        would return, so the endpoint cannot be used to probe for draft IDs.
+      operationId: createComment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommentRequest"
+            example:
+              content: This helped, thank you.
+      responses:
+        "201":
+          description: The comment was created.
+          headers:
+            Location:
+              description: The path of the new comment.
+              schema:
+                type: string
+              example: /api/v1/comments/5c2d9e1a-88ef-4c22-a133-4b5c6d7e8f90
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Comment"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/comments/{commentID}:
+    parameters:
+      - $ref: "#/components/parameters/CommentID"
+    get:
+      tags: [Comments]
+      summary: Get a comment
+      description: |
+        Returns one comment. The route is flat rather than nested under its post
+        so a client following a permalink does not need the post ID as well.
+      operationId: getComment
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: The comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Comment"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      tags: [Comments]
+      summary: Edit a comment
+      description: |
+        Only the comment's author and administrators may edit. A post's author
+        is *not* granted moderation rights over comments on their post; see the
+        README's known limitations.
+      operationId: updateComment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCommentRequest"
+            example:
+              content: Edited — I had misread the second paragraph.
+      responses:
+        "200":
+          description: The updated comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Comment"
+                  request_id:
+                    $ref: "#/components/schemas/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      tags: [Comments]
+      summary: Delete a comment
+      description: |
+        Soft-deletes the comment and every reply beneath it, and decrements the
+        post's comment counter by the number of rows actually removed — all in
+        one transaction.
+      operationId: deleteComment
+      responses:
+        "204":
+          description: The comment was deleted.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The access token returned by `/api/v1/auth/login` or
+        `/api/v1/auth/refresh`, sent as `Authorization: Bearer <token>`.
+
+  parameters:
+    UserID:
+      name: userID
+      in: path
+      required: true
+      description: The user's UUID.
+      schema:
+        type: string
+        format: uuid
+      example: 8f14e45f-ce9a-4c1b-9a5e-1f7b2c3d4e5f
+
+    PostID:
+      name: postID
+      in: path
+      required: true
+      description: The post's UUID.
+      schema:
+        type: string
+        format: uuid
+      example: 3b1f8a2c-77de-4b0f-9c11-2a3b4c5d6e7f
+
+    CommentID:
+      name: commentID
+      in: path
+      required: true
+      description: The comment's UUID.
+      schema:
+        type: string
+        format: uuid
+      example: 5c2d9e1a-88ef-4c22-a133-4b5c6d7e8f90
+
+    Page:
+      name: page
+      in: query
+      required: false
+      description: |
+        1-based page number. An out-of-range value is an error rather than being
+        silently corrected, because a client sending `page=0` has a bug.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Items per page. The upper bound is an availability control: without it
+        one client can ask for a million rows and exhaust the connection pool.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  schemas:
+    RequestId:
+      type: string
+      description: Correlation ID, also returned in the `X-Request-Id` header.
+      example: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable identifier. Branch on this, not on `message`.
+              enum:
+                - validation_failed
+                - bad_request
+                - unauthorized
+                - forbidden
+                - not_found
+                - conflict
+                - payload_too_large
+                - unsupported_media_type
+                - rate_limited
+                - request_timeout
+                - internal_error
+                - service_unavailable
+            message:
+              type: string
+              description: A human-readable explanation. Never contains internal detail.
+              example: post not found
+            fields:
+              type: array
+              description: Present on validation failures; one entry per invalid field.
+              items:
+                $ref: "#/components/schemas/FieldError"
+        request_id:
+          $ref: "#/components/schemas/RequestId"
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: The JSON name of the offending field, as the client sent it.
+          example: email
+        message:
+          type: string
+          example: must be a valid email address
+
+    Pagination:
+      type: object
+      required: [page, limit, total_items, total_pages, has_next, has_prev]
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total_items:
+          type: integer
+          format: int64
+          description: Total matching items the caller is permitted to see.
+          example: 42
+        total_pages:
+          type: integer
+          example: 3
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+
+    HealthResponse:
+      type: object
+      required: [status, version, uptime_seconds]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        version:
+          type: string
+          example: v1.0.0
+        uptime_seconds:
+          type: integer
+          format: int64
+          example: 3612
+        checks:
+          type: object
+          description: Present on readiness only.
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status:
+                type: string
+                enum: [ok, error]
+              latency_ms:
+                type: integer
+                format: int64
+              error:
+                type: string
+
+    RegisterRequest:
+      type: object
+      required: [email, username, display_name, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Stored folded to lower case, so identity is case-insensitive.
+          example: ben@example.com
+        username:
+          type: string
+          minLength: 3
+          maxLength: 30
+          pattern: "^[A-Za-z0-9_-]{3,30}$"
+          description: Letters, digits, underscore and hyphen. Case-insensitive for identity.
+          example: ben_siregar
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Ben Siregar
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+          description: The maximum is bcrypt's input limit, enforced so it surfaces as a field error.
+          example: a-good-enough-password
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          example: ben@example.com
+        password:
+          type: string
+          format: password
+          maxLength: 72
+          description: |
+            No minimum length is applied at login. Enforcing one here would tell
+            an attacker something about the stored password.
+          example: a-good-enough-password
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 16
+          maxLength: 256
+          example: 9tQx1kJk8Zr2H4pS6vN0bW3yF7dL5cM8aE1gT2uY9oI
+
+    LogoutRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 16
+          maxLength: 256
+          example: 9tQx1kJk8Zr2H4pS6vN0bW3yF7dL5cM8aE1gT2uY9oI
+
+    UpdateProfileRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Ben P. Siregar
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in, expires_at, user]
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT for the `Authorization` header.
+        refresh_token:
+          type: string
+          description: |
+            Long-lived opaque token. Store it securely; it is shown once and is
+            invalidated the moment it is used to refresh.
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          format: int64
+          description: Access-token lifetime in seconds.
+          example: 900
+        expires_at:
+          type: string
+          format: date-time
+        user:
+          $ref: "#/components/schemas/PrivateUser"
+
+    PublicUser:
+      type: object
+      description: The projection returned for someone else's profile. No email, no role.
+      required: [id, username, display_name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+          example: ben_siregar
+        display_name:
+          type: string
+          example: Ben Siregar
+        created_at:
+          type: string
+          format: date-time
+
+    PrivateUser:
+      type: object
+      description: The projection returned to the account owner.
+      required: [id, email, username, display_name, role, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Author:
+      type: object
+      description: The author summary embedded in posts and comments, so rendering needs no second call.
+      required: [id, username, display_name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type: string
+
+    CreatePostRequest:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+          example: Concurrency in Go
+        content:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          example: Goroutines are cheap, but they are not free…
+        status:
+          type: string
+          enum: [draft, published]
+          default: draft
+          description: Omitted means draft, so nothing is published by accident.
+
+    UpdatePostRequest:
+      type: object
+      minProperties: 1
+      description: Every field is optional; at least one must be present.
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 200
+        content:
+          type: string
+          minLength: 1
+          maxLength: 50000
+        status:
+          type: string
+          enum: [draft, published]
+
+    Post:
+      type: object
+      required:
+        [id, title, slug, content, status, comment_count, author_id, published_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        slug:
+          type: string
+          description: URL-safe identifier derived from the title.
+          example: concurrency-in-go
+        content:
+          type: string
+        status:
+          type: string
+          enum: [draft, published]
+        comment_count:
+          type: integer
+          description: |
+            Denormalised onto the post row and maintained by the same transaction
+            that writes a comment, so a list page needs no per-post subquery.
+          example: 4
+        author:
+          $ref: "#/components/schemas/Author"
+        author_id:
+          type: string
+          format: uuid
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Always null for a draft, always set for a published post.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateCommentRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 5000
+          example: This helped, thank you.
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Makes this a reply. Must be a comment on the same post.
+
+    UpdateCommentRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 5000
+
+    Comment:
+      type: object
+      required: [id, post_id, parent_id, content, author_id, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        post_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        content:
+          type: string
+        author:
+          $ref: "#/components/schemas/Author"
+        author_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+  responses:
+    BadRequest:
+      description: The request could not be decoded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: bad_request
+              message: malformed JSON at byte offset 27
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    Unauthorized:
+      description: |
+        Authentication is missing or unusable. Expired, forged and malformed
+        tokens are reported identically; the distinguishing detail goes to the
+        server log.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer realm="api", error="invalid_token"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: unauthorized
+              message: invalid or expired access token
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    Forbidden:
+      description: Authenticated, but not permitted to do this.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: forbidden
+              message: you may only modify your own posts
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    NotFound:
+      description: |
+        The resource does not exist — or exists but is not visible to you, which
+        is reported the same way on purpose.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: not_found
+              message: post not found
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    Conflict:
+      description: The request collides with existing state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: conflict
+              message: a post with this slug already exists
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    PayloadTooLarge:
+      description: The request body exceeded the configured limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: payload_too_large
+              message: request body must not exceed 1048576 bytes
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    UnsupportedMediaType:
+      description: The Content-Type was not application/json.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: unsupported_media_type
+              message: Content-Type must be application/json
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    ValidationFailed:
+      description: |
+        One or more fields are invalid. Every failing field is reported at once,
+        so a client does not need one round trip per mistake.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: validation_failed
+              message: one or more fields are invalid
+              fields:
+                - field: email
+                  message: must be a valid email address
+                - field: password
+                  message: must be at least 8 characters long
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    RateLimited:
+      description: The caller exceeded their request budget.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+          example: 3
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: rate_limited
+              message: too many requests; please retry later
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+
+    InternalError:
+      description: |
+        An unexpected server-side failure. The message is deliberately generic
+        and constant; the cause is in the server log, correlated by `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: internal_error
+              message: an internal error occurred
+            request_id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0

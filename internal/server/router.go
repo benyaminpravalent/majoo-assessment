@@ -61,7 +61,7 @@ type routerDeps struct {
 //  5. RateLimit before the timeout and body limit, so shed load costs as little
 //     work as possible.
 //  6. Timeout then BodyLimit last, closest to the handler that they constrain.
-func newRouter(d routerDeps) http.Handler {
+func newRouter(d routerDeps) chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)

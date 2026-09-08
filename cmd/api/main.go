@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -38,10 +39,28 @@ func main() {
 	}
 }
 
+// healthCheck makes the binary able to probe itself.
+//
+// The runtime image is distroless: it contains no shell, no curl and no wget,
+// so a Docker HEALTHCHECK has nothing to call. Rather than reintroduce a
+// package manager and a 40 MB base image for the sake of one HTTP GET, the
+// binary answers the question itself.
+//
+// Under Kubernetes this is unnecessary — use an httpGet probe and let the
+// kubelet do the asking.
+var healthCheck = flag.Bool("health-check", false,
+	"probe this service's own /healthz endpoint and exit 0 (healthy) or 1 (not)")
+
 func run() error {
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
+	}
+
+	if *healthCheck {
+		return probeSelf(cfg.HTTP.Addr)
 	}
 
 	logger := logging.New(os.Stdout, cfg.Log.Level, cfg.Log.Format).With(

@@ -17,18 +17,33 @@ import (
 	"github.com/bpsiregar/majoo-assessment/internal/platform/validation"
 	"github.com/bpsiregar/majoo-assessment/internal/post"
 	"github.com/bpsiregar/majoo-assessment/internal/user"
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Server owns the HTTP listener and everything with a lifecycle attached to it.
 type Server struct {
 	http    *http.Server
+	router  chi.Router
 	logger  *slog.Logger
 	cfg     config.Config
 	bus     *events.Bus
 	limiter *middleware.RateLimiter
 	authLim *middleware.RateLimiter
 }
+
+// Router exposes the routing tree.
+//
+// It exists for the contract test in tests/, which walks the registered routes
+// and compares them with api/openapi.yaml. That check is only possible if the
+// routes can be enumerated, and enumerating them is strictly better than
+// maintaining a hand-written list that drifts.
+func (s *Server) Router() chi.Router { return s.router }
+
+// Close releases the background goroutines without serving anything. Run does
+// this itself; Close is for callers — tests, mainly — that build a Server and
+// never start it.
+func (s *Server) Close() { s.stopBackground(time.Second) }
 
 // New wires the application and returns a Server ready to Run.
 //
@@ -78,6 +93,7 @@ func New(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, version str
 	})
 
 	return &Server{
+		router: handler,
 		http: &http.Server{
 			Addr:    cfg.HTTP.Addr,
 			Handler: handler,

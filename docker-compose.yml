@@ -1,0 +1,113 @@
+# Local development and reviewer stack.
+#
+#   docker compose up --build
+#
+# Brings up PostgreSQL, runs the migrations to completion, then starts the API
+# on http://localhost:8080. The ordering is enforced by health and completion
+# conditions rather than by a sleep, so `up` either works or fails loudly.
+#
+# This file is for local use. It is not a production deployment: the credentials
+# below are fixed and public, and the database port is published to the host.
+
+name: majoo-blog-api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blog
+      POSTGRES_PASSWORD: blog
+      POSTGRES_DB: blog
+      # Faster and deterministic locale handling for a throwaway dev database.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Creates the separate database the integration tests use, so running them
+      # never touches development data.
+      - ./scripts/init-test-db.sh:/docker-entrypoint-initdb.d/10-init-test-db.sh:ro
+    healthcheck:
+      # -U and -d are required: without them pg_isready checks the "root" user
+      # and reports healthy while the real database is still initialising.
+      test: ["CMD-SHELL", "pg_isready -U blog -d blog"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Migrations run as a separate one-shot service rather than inside the API's
+  # entrypoint. That keeps schema changes an explicit, observable deployment
+  # step, and it is the shape a Kubernetes init container or Job would take.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    entrypoint: ["/usr/local/bin/blogapi-migrate"]
+    command: ["up"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://blog:blog@postgres:5432/blog?sslmode=disable
+      # Required only because configuration is validated as a whole; the
+      # migrator never issues a token.
+      JWT_SECRET: local-development-secret-not-for-production-use
+      LOG_FORMAT: text
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: development
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://blog:blog@postgres:5432/blog?sslmode=disable
+      DB_MAX_CONNS: "20"
+      DB_MIN_CONNS: "2"
+      # Local only. In any real environment this comes from a secret store; see
+      # the security section of the README.
+      JWT_SECRET: local-development-secret-not-for-production-use
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 720h
+      # 10 rather than the 12 default: local iteration should not spend a
+      # quarter of a second per login.
+      BCRYPT_COST: "10"
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_RPS: "50"
+      RATE_LIMIT_BURST: "100"
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        # Wait for the migrator to exit successfully, not merely to start.
+        condition: service_completed_successfully
+    healthcheck:
+      # The image is distroless, so the binary probes itself; see cmd/api.
+      test: ["CMD", "/usr/local/bin/blogapi", "-health-check"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # Defence in depth for a container that needs no write access and no
+    # privileges. tmpfs covers anything that expects a writable /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
