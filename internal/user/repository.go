@@ -195,6 +195,20 @@ func (r *SessionRepository) ByHash(ctx context.Context, hash []byte) (Session, e
 // rotation from a nice idea into a usable theft signal.
 func (r *SessionRepository) Rotate(ctx context.Context, presentedHash []byte, next *Session) error {
 	return postgres.InTx(ctx, r.db, func(tx pgx.Tx) error {
+		// The replacement is inserted first: replaced_by references this table,
+		// and the constraint is not deferrable, so the row must exist before the
+		// old one can point at it. If the UPDATE below then matches nothing the
+		// transaction rolls back, discarding this insert.
+		const insert = `
+			INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, user_agent)
+			VALUES ($1, $2, $3, $4, nullif($5, ''))
+			RETURNING created_at`
+
+		if err := tx.QueryRow(ctx, insert, next.ID, next.UserID, next.TokenHash, next.ExpiresAt, next.UserAgent).
+			Scan(&next.CreatedAt); err != nil {
+			return apierr.Internal(fmt.Errorf("insert rotated refresh token: %w", err))
+		}
+
 		const revoke = `
 			UPDATE refresh_tokens
 			   SET revoked_at = now(), replaced_by = $2
@@ -211,16 +225,6 @@ func (r *SessionRepository) Rotate(ctx context.Context, presentedHash []byte, ne
 			// All three mean the same thing to the client, and the transaction
 			// rolls back so no replacement is created.
 			return ErrSessionNotFound
-		}
-
-		const insert = `
-			INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, user_agent)
-			VALUES ($1, $2, $3, $4, nullif($5, ''))
-			RETURNING created_at`
-
-		if err := tx.QueryRow(ctx, insert, next.ID, next.UserID, next.TokenHash, next.ExpiresAt, next.UserAgent).
-			Scan(&next.CreatedAt); err != nil {
-			return apierr.Internal(fmt.Errorf("insert rotated refresh token: %w", err))
 		}
 		return nil
 	})

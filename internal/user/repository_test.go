@@ -208,12 +208,16 @@ func TestSessionRepositoryRotateCommitsBothStatements(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 
+	// Order matters and is asserted here: replaced_by is a self-reference with a
+	// non-deferrable constraint, so the replacement row must be inserted before
+	// the presented token can point at it. Reversing these two statements is a
+	// foreign-key violation against a real database.
 	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO refresh_tokens`).WithArgs(anyArgs(5)...).
+		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(time.Now()))
 	mock.ExpectExec(`UPDATE refresh_tokens`).
 		WithArgs(presented, next.ID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectQuery(`INSERT INTO refresh_tokens`).WithArgs(anyArgs(5)...).
-		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(time.Now()))
 	mock.ExpectCommit()
 
 	assert.NoError(t, repo.Rotate(context.Background(), presented, next))
@@ -233,8 +237,10 @@ func TestSessionRepositoryRotateRollsBackWhenTheTokenIsAlreadyUsed(t *testing.T)
 	next := &Session{ID: uuid.New(), UserID: uuid.New(), TokenHash: []byte("next-hash")}
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO refresh_tokens`).WithArgs(anyArgs(5)...).
+		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(time.Now()))
 	// Zero rows affected: the "AND revoked_at IS NULL AND expires_at > now()"
-	// guard did not match.
+	// guard did not match. The rollback is what discards the insert above.
 	mock.ExpectExec(`UPDATE refresh_tokens`).
 		WithArgs(presented, next.ID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
@@ -246,8 +252,8 @@ func TestSessionRepositoryRotateRollsBackWhenTheTokenIsAlreadyUsed(t *testing.T)
 }
 
 // TestSessionRepositoryRotateRollsBackWhenTheInsertFails covers the other
-// direction: a failure after the revoke must not leave the user logged out with
-// no replacement token.
+// direction: if the replacement cannot be written the presented token must keep
+// working, rather than leaving the user logged out with no replacement token.
 func TestSessionRepositoryRotateRollsBackWhenTheInsertFails(t *testing.T) {
 	t.Parallel()
 
@@ -258,7 +264,7 @@ func TestSessionRepositoryRotateRollsBackWhenTheInsertFails(t *testing.T) {
 	next := &Session{ID: uuid.New(), UserID: uuid.New(), TokenHash: []byte("next-hash")}
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`UPDATE refresh_tokens`).WithArgs(anyArgs(2)...).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// The insert now runs first, so the revoke is never reached.
 	mock.ExpectQuery(`INSERT INTO refresh_tokens`).WithArgs(anyArgs(5)...).WillReturnError(errors.New("connection reset"))
 	mock.ExpectRollback()
 
