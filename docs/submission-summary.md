@@ -141,6 +141,6 @@ docs/           ADRs, sections 2 and 3, traceability, AI usage
 scripts/        smoke test, SQL verifier, Mermaid verifier
 ```
 
-13 commits, each one logical change. AI usage is disclosed in full in
+16 commits, each one logical change. AI usage is disclosed in full in
 [`ai-usage.md`](ai-usage.md), and every commit carries a `Co-Authored-By: Claude`
 trailer — say the word if you would prefer it removed before submission.
