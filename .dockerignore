@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.local
+bin/
+coverage*
+docs/
+database-assessment/
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.data/
