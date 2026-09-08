@@ -68,10 +68,17 @@ func loadSpec(t *testing.T) openAPIDocument {
 // pgxpool.NewWithConfig does not dial when MinConns is zero, so the whole
 // dependency graph can be wired without a database. That is enough for a
 // routing check: no request in this file reaches a repository.
-func buildRouter(t *testing.T) chi.Router {
+// An optional dbURL overrides the configured database, which the readiness
+// probe test uses to point at an address nothing is listening on.
+func buildRouter(t *testing.T, dbURL ...string) chi.Router {
 	t.Helper()
 
-	t.Setenv("DATABASE_URL", "postgres://blog:blog@127.0.0.1:5432/blog?sslmode=disable")
+	url := "postgres://blog:blog@127.0.0.1:5432/blog?sslmode=disable"
+	if len(dbURL) > 0 {
+		url = dbURL[0]
+	}
+
+	t.Setenv("DATABASE_URL", url)
 	t.Setenv("JWT_SECRET", strings.Repeat("k", 48))
 	t.Setenv("RATE_LIMIT_ENABLED", "false")
 	t.Setenv("LOG_LEVEL", "error")
@@ -348,8 +355,13 @@ func TestSecurityHeadersArePresentOnEveryResponse(t *testing.T) {
 // TestReadinessFailsWithoutADatabase confirms the probe is actually wired to
 // the pool: there is no server listening on the configured address here, so it
 // must report degraded rather than optimistically returning 200.
+//
+// The port is deliberately not 5432. Pointing at the default would make this
+// test pass only on machines where no database happens to be running — it would
+// fail for anyone running `make up && make test`, and on a CI runner with a
+// Postgres service container it would fail while proving nothing.
 func TestReadinessFailsWithoutADatabase(t *testing.T) {
-	r := buildRouter(t)
+	r := buildRouter(t, "postgres://blog:blog@127.0.0.1:1/blog?sslmode=disable")
 
 	start := time.Now()
 	w := doRequest(t, r, http.MethodGet, "/readyz")
