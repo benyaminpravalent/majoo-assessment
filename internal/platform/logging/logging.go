@@ -18,21 +18,29 @@ import (
 	"strings"
 )
 
-// redactedKeys are attribute names whose values are replaced with a placeholder.
-// Matching is case-insensitive and substring-based, which intentionally errs
-// toward over-redaction: "db_password" and "X-Api-Key" both match.
+// redactedKeys are the needles matched against an attribute name to decide
+// whether its value must be replaced.
+//
+// They are written without separators because IsSensitiveKey strips "-" and "_"
+// before comparing. That is what makes "api_key", "apiKey" and "X-Api-Key" all
+// match one entry — writing every spelling out by hand is how a variant gets
+// missed, which is exactly what happened to "X-Api-Key" before this was fixed.
+//
+// Matching is substring-based and intentionally errs toward over-redaction: a
+// wrongly redacted field costs a debugging session, a leaked credential costs
+// considerably more.
 var redactedKeys = []string{
 	"password",
 	"passwd",
 	"secret",
 	"token",
 	"authorization",
-	"api_key",
 	"apikey",
 	"cookie",
-	"set-cookie",
 	"credential",
 	"jwt",
+	"privatekey",
+	"bearer",
 }
 
 const redactedPlaceholder = "[REDACTED]"
@@ -85,9 +93,12 @@ func redact(_ []string, a slog.Attr) slog.Attr {
 // It is exported because the HTTP access log applies the same rule to request
 // headers before recording them.
 func IsSensitiveKey(key string) bool {
-	lower := strings.ToLower(key)
+	normalised := strings.ToLower(key)
+	normalised = strings.ReplaceAll(normalised, "-", "")
+	normalised = strings.ReplaceAll(normalised, "_", "")
+
 	for _, k := range redactedKeys {
-		if strings.Contains(lower, k) {
+		if strings.Contains(normalised, k) {
 			return true
 		}
 	}
