@@ -149,7 +149,20 @@ compatible with it, so the build does not silently pull a newer toolchain.
 ## Configuration
 
 All configuration comes from the environment. `.env.example` documents every
-variable with its default and its purpose; copy it to `.env` to start.
+variable with its default and its purpose.
+
+**The binaries do not read `.env` themselves.** There is no dotenv dependency,
+deliberately: nothing can silently pick up a stray file, and what the process
+sees is exactly what its supervisor gave it. Compose passes every value
+explicitly, so the [Quick start](#quick-start) needs no setup. To run from
+source, load the file into your shell first:
+
+```bash
+set -a; . ./.env; set +a       # or export the two required variables by hand
+```
+
+Without that, `go run ./cmd/api` and `go run ./cmd/migrate` stop immediately
+with `DATABASE_URL: required` — which is the intended behaviour, not a bug.
 
 Configuration is loaded once at start-up, validated **as a whole**, and passed
 explicitly down the call graph. There are no mutable globals. Validation
@@ -216,6 +229,12 @@ Common commands, with and without `make`:
 Migrations are plain SQL in [`migrations/`](migrations/), embedded into the
 binary with `go:embed`. There is no volume to mount and no way to deploy an
 image whose code and schema disagree.
+
+These need `DATABASE_URL` and `JWT_SECRET` in the environment — see
+[Configuration](#configuration). Inside Compose they already are. `JWT_SECRET`
+is required even though the migrator never issues a token, because
+configuration is validated as one unit; the alternative is a second, partial
+config path that nothing else exercises.
 
 ```bash
 go run ./cmd/migrate up          # apply everything pending

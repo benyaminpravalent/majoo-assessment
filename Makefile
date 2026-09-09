@@ -41,7 +41,7 @@ build:
 	go build -trimpath -ldflags="-s -w" -o $(BIN_DIR)/$(MIGRATE_BIN) ./cmd/migrate
 	@echo "built $(BIN_DIR)/$(BINARY) and $(BIN_DIR)/$(MIGRATE_BIN) ($(VERSION))"
 
-## run: run the API from source, reading .env if present
+## run: run the API from source (DATABASE_URL and JWT_SECRET must be exported)
 .PHONY: run
 run:
 	go run ./cmd/api
