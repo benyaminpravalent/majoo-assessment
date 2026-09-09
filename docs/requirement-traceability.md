@@ -276,7 +276,7 @@ executable artefacts in [`database-assessment/`](../database-assessment/).
 |---|---|---|
 | Normalised schema | `schema.sql`, 19 tables | ✅ applies cleanly to PostgreSQL 18.3 |
 | Relationships and constraints | 30+ constraints; delete behaviour chosen per relationship | ✅ **11 invalid writes confirmed rejected** |
-| Indexes for common queries | `indexes.sql`, 50 indexes, each with query/ordering/selectivity/shape/cost | ✅ |
+| Indexes for common queries | `indexes.sql` — **25 purpose-built**, each documented with its query, column ordering, selectivity, shape and write cost. 50 in total once the 19 primary keys and 6 unique constraints in `schema.sql` are counted, since PostgreSQL backs those with indexes too | ✅ |
 | Complex SQL for feed generation | `queries.sql` §7, hybrid fan-out | ✅ **executed, plan inspected** |
 | Caching strategy | Design doc §6 | 📝 |
 
