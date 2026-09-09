@@ -12,8 +12,7 @@ This is the honest account.
 |---|---|
 | Tool | **Claude (Opus 5)**, agentic terminal workflow |
 | Mode | Multi-turn; the model read and wrote files, ran commands, and iterated on failures |
-| Human input | An initial brief plus the assessment PDF; direction and review throughout |
-| Elapsed | Two days, two machines. The second machine ran the checks the first could not, which is where [§5](#5-defects-found-by-running-the-previously-unverified-checks)'s three defects surfaced |
+| Human input | The brief and the assessment PDF up front; then direction, review and rejection throughout — the eight cases in [§4](#4-suggestions-that-were-corrected-rejected-or-simplified) and the verification pass in [§5](#5-defects-found-by-running-the-previously-unverified-checks) are the record |
 
 The workflow was not "generate code, paste, submit". It was: plan against the
 brief, implement a slice, **run it**, fix what broke, commit, repeat. Almost
