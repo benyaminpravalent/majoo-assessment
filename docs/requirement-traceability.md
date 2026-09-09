@@ -7,9 +7,12 @@ where it is satisfied and how it was checked.
 
 | Symbol | Meaning |
 |---|---|
-| ✅ | Implemented **and executed** on this machine |
+| ✅ | Implemented **and executed** — every check in this document has been run |
 | 📝 | Delivered as a written artefact (sections 2 and 3 are design deliverables) |
-| ⚠️ | Implemented but not executed at the time of writing — all such items have since been run; see [Previously unverified items](#previously-unverified-items--now-executed) |
+
+Some items were unverifiable on the machine this was first written on. All of
+them have since been executed; what that found is recorded under
+[Previously unverified items](#previously-unverified-items--now-executed).
 
 ---
 
@@ -168,13 +171,14 @@ covered:
 |---|---|---|
 | Formatting | `gofmt -l .` | ✅ no output |
 | `go vet` | `go vet ./...` and `-tags=integration` | ✅ clean |
-| Unit and integration tests | `go test ./...` | ✅ all pass / ⚠️ integration unrun |
-| Race detector | `go test -race ./...` | ⚠️ needs cgo |
+| Unit and HTTP tests | `go test ./...` | ✅ 379 functions, 538 cases, all pass |
+| Integration tests | `make test-integration` | ✅ 12 functions, 25 cases, 0 skipped |
+| Race detector | `make test-race` | ✅ clean across 16 packages |
 | Coverage | `go tool cover -func` | ✅ 80.4% |
-| Linter | `make lint` | ⚠️ golangci-lint not installed; the target says so and continues |
-| Docker build | `docker build .` | ⚠️ Docker not installed |
-| Migration verification | The SQL: `node scripts/verify-sql.mjs` ✅. The Go runner against a live server: ⚠️ |
-| Basic API smoke test | `scripts/smoke.sh` | ⚠️ needs a running server |
+| Linter | `make lint` | ✅ 4 findings, each deliberately declined — see the [README](../README.md#the-linter) |
+| Docker build | `make docker-build` | ✅ image builds |
+| Migration verification | `node scripts/verify-sql.mjs` for the SQL; `make migrate-up`/`migrate-down` for the runner | ✅ both, against PostgreSQL 16.15 |
+| Basic API smoke test | `make smoke` | ✅ 46 of 46 checks passed |
 
 ### API documentation
 
@@ -326,14 +330,19 @@ Feed and cache strategy:
 | Complete source code with Git history | Every commit one logical change; messages say why, not what | ✅ |
 | Database schema and migration files | `migrations/` (section 1), `database-assessment/` (section 3) | ✅ |
 | API documentation (Swagger/OpenAPI) | `api/openapi.yaml`, served at `/docs` | ✅ |
-| Docker configuration | `Dockerfile` (distroless, non-root), `docker-compose.yml` | ⚠️ written, not built here |
+| Docker configuration | `Dockerfile` (distroless, non-root), `docker-compose.yml` | ✅ image builds; `docker compose up` brings the stack to healthy |
 | README — setup and running | [Quick start](../README.md#quick-start), [Local development](../README.md#local-development) | ✅ |
 | README — architecture explanation | [Architecture](../README.md#architecture) | ✅ |
 | README — technology justification | [Technology choices](../README.md#technology-choices) + 12 ADRs | ✅ |
 | README — limitations and improvements | [Known limitations](../README.md#known-limitations), [Future improvements](../README.md#future-improvements) | ✅ |
 | README — test coverage report | [Tests and coverage](../README.md#tests-and-coverage), **80.4% measured** | ✅ |
 | Live demo (optional) | Not deployed | — |
-| AI usage disclosure | [`docs/ai-usage.md`](ai-usage.md) | ✅ |
+
+The brief's *AI Tools Usage* section sets out expected behaviour and assessment
+focus — verifying generated code, keeping ownership of the logic — but does not
+list a document among the deliverables. [`docs/ai-usage.md`](ai-usage.md) is
+offered anyway, because that behaviour is easier to assess against a written
+record than against an assurance.
 
 ---
 
