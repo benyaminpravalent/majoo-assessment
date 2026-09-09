@@ -696,13 +696,15 @@ corrected or rejected, and what evidence establishes correctness — is in
 
 The short version: AI wrote most of the first-draft code, tests and prose;
 every design decision was reviewed and several were changed; and the claims in
-this README are backed by commands that were actually run. Five real defects
+this README are backed by commands that were actually run. Eight real defects
 were caught by executing the work rather than by reading it, and each is
-documented at the place it was found — including the `X-Api-Key` redaction gap
-and the four SQL defects in section 3.
+documented at the place it was found — the `X-Api-Key` redaction gap, four SQL
+defects in section 3, and three more that surfaced only once the Docker stack
+ran, including a 500 on every token refresh that no mock could have caught.
 
-Git history carries a `Co-Authored-By: Claude` trailer on each commit. Say the
-word if you would prefer it removed before submission.
+Git history carries a `Co-Authored-By: Claude` trailer on each commit, kept
+deliberately so the history agrees with that disclosure rather than quietly
+contradicting it.
 
 ---
 

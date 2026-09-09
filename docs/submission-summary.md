@@ -155,6 +155,7 @@ docs/           ADRs, sections 2 and 3, traceability, AI usage
 scripts/        smoke test, SQL verifier, Mermaid verifier
 ```
 
-16 commits, each one logical change. AI usage is disclosed in full in
-[`ai-usage.md`](ai-usage.md), and every commit carries a `Co-Authored-By: Claude`
-trailer — say the word if you would prefer it removed before submission.
+Every commit is one logical change, and the message says why rather than what.
+AI usage is disclosed in full in [`ai-usage.md`](ai-usage.md), and each commit
+carries a `Co-Authored-By: Claude` trailer — kept deliberately, so the git
+history agrees with that disclosure instead of quietly contradicting it.

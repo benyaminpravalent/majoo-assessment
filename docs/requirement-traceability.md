@@ -323,7 +323,7 @@ Feed and cache strategy:
 
 | Deliverable | Where | Status |
 |---|---|---|
-| Complete source code with Git history | 16 commits, each one logical change | ✅ |
+| Complete source code with Git history | Every commit one logical change; messages say why, not what | ✅ |
 | Database schema and migration files | `migrations/` (section 1), `database-assessment/` (section 3) | ✅ |
 | API documentation (Swagger/OpenAPI) | `api/openapi.yaml`, served at `/docs` | ✅ |
 | Docker configuration | `Dockerfile` (distroless, non-root), `docker-compose.yml` | ⚠️ written, not built here |
